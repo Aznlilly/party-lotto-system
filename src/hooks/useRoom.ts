@@ -19,6 +19,7 @@ import {
   pickRandomIndex,
 } from '../lib/rouletteEngine'
 import { getMoviePerimeterPosition } from '../lib/perimeterLayout'
+import { resolveUniqueNickname } from '../lib/nicknames'
 import { toTrysteroRoomId } from '../lib/roomCode'
 
 type UseRoomResult = {
@@ -59,7 +60,11 @@ function stateRevision(state: RoomState): number {
 }
 
 function shouldApplyRemoteState(local: RoomState, remote: RoomState): boolean {
-  return stateRevision(remote) > stateRevision(local)
+  if (stateRevision(remote) > stateRevision(local)) return true
+  return (
+    stateRevision(remote) >= stateRevision(local) &&
+    peersRosterChanged(local.peers, remote.peers)
+  )
 }
 
 function isWaitingForHostSnapshot(
@@ -77,9 +82,35 @@ function sortedPeers(peers: Iterable<PeerInfo>): PeerInfo[] {
   })
 }
 
+function peersRosterChanged(current: PeerInfo[], next: PeerInfo[]): boolean {
+  if (current.length !== next.length) return true
+  return next.some(
+    (peer, index) =>
+      peer.peerId !== current[index]?.peerId ||
+      peer.nickname !== current[index]?.nickname,
+  )
+}
+
+function syncAssignedNickname(
+  state: RoomState,
+  myPeerId: string,
+  nicknameRef: React.MutableRefObject<string>,
+  selfPeerRef: React.MutableRefObject<PeerInfo>,
+  peersRef: React.MutableRefObject<Map<string, PeerInfo>>,
+): void {
+  const me = state.peers.find((peer) => peer.peerId === myPeerId)
+  if (!me || me.nickname === nicknameRef.current) return
+
+  nicknameRef.current = me.nickname
+  sessionStorage.setItem('party-lotto-nickname', me.nickname)
+  selfPeerRef.current = { ...selfPeerRef.current, nickname: me.nickname }
+  peersRef.current.set(myPeerId, selfPeerRef.current)
+}
+
 export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const myPeerId = selfId
   const joinedAtRef = useRef(Date.now())
+  const nicknameRef = useRef(nickname)
   const selfPeerRef = useRef<PeerInfo>({
     peerId: myPeerId,
     nickname,
@@ -119,6 +150,12 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
     stateRef.current = stamped
     setRoomState(stamped)
+    if (isHostRef.current) {
+      peersRef.current.clear()
+      for (const peer of stamped.peers) {
+        peersRef.current.set(peer.peerId, peer)
+      }
+    }
     if (shouldBroadcast) {
       broadcastRef.current(stamped)
     }
@@ -161,6 +198,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   }, [hostCommit])
 
   useEffect(() => {
+    nicknameRef.current = nickname
     selfPeerRef.current = {
       peerId: myPeerId,
       nickname,
@@ -266,19 +304,8 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
       if (amHost) {
         stopSyncRetry()
-        const nextPeers = sortedPeers(peersRef.current.values())
-        if (
-          stateRef.current.hostPeerId !== myPeerId ||
-          stateRef.current.peers.length !== nextPeers.length
-        ) {
-          hostCommit(
-            {
-              ...stateRef.current,
-              hostPeerId: myPeerId,
-              peers: nextPeers,
-            },
-            true,
-          )
+        if (stateRef.current.hostPeerId !== myPeerId) {
+          hostCommit({ ...stateRef.current, hostPeerId: myPeerId }, true)
         }
         return
       }
@@ -304,34 +331,47 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
       void announceAction.send({
         peerId: myPeerId,
-        nickname,
+        nickname: nicknameRef.current,
         joinedAt: joinedAtRef.current,
       })
     }
 
-    const commitPeerRoster = (isNewPeer: boolean, peerId: string) => {
-      const nextPeers = sortedPeers(peersRef.current.values())
-      const peersChanged =
-        nextPeers.length !== stateRef.current.peers.length ||
-        nextPeers.some((peer, index) => peer.peerId !== stateRef.current.peers[index]?.peerId)
-
-      if (peersChanged) {
-        hostCommit({ ...stateRef.current, peers: nextPeers }, true)
-      }
-
-      if (isNewPeer && peerId !== myPeerId) {
-        pushStateToPeer(peerId)
+    const syncHostPeersFromState = () => {
+      peersRef.current.clear()
+      for (const peer of stateRef.current.peers) {
+        peersRef.current.set(peer.peerId, peer)
       }
     }
 
+    const commitPeerRoster = (peerId: string) => {
+      const nextPeers = sortedPeers(peersRef.current.values())
+      if (!peersRosterChanged(stateRef.current.peers, nextPeers)) {
+        pushStateToPeer(peerId)
+        return
+      }
+
+      hostCommit({ ...stateRef.current, peers: nextPeers }, true)
+      pushStateToPeer(peerId)
+    }
+
     announceAction.onMessage = (data) => {
-      const isNewPeer = !peersRef.current.has(data.peerId)
-      peersRef.current.set(data.peerId, data)
-      resolveHostRole()
+      if (!isHostRef.current) {
+        if (!hasSyncedFromHostRef.current) {
+          peersRef.current.set(data.peerId, data)
+          resolveHostRole()
+        }
+        return
+      }
 
-      if (!isHostRef.current) return
+      const assignedNickname = resolveUniqueNickname(
+        data.nickname,
+        sortedPeers(peersRef.current.values()),
+        data.peerId,
+      )
+      peersRef.current.set(data.peerId, { ...data, nickname: assignedNickname })
+      if (data.peerId === myPeerId) return
 
-      commitPeerRoster(isNewPeer, data.peerId)
+      commitPeerRoster(data.peerId)
     }
 
     stateAction.onMessage = (state, context) => {
@@ -352,7 +392,11 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
         hasSyncedFromHostRef.current = true
         stateRef.current = state
         setRoomState(state)
+        syncAssignedNickname(state, myPeerId, nicknameRef, selfPeerRef, peersRef)
         syncHostRoleFromState()
+        if (isHostRef.current) {
+          syncHostPeersFromState()
+        }
         stopSyncRetry()
         return
       }
@@ -361,6 +405,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
       stateRef.current = state
       setRoomState(state)
+      syncAssignedNickname(state, myPeerId, nicknameRef, selfPeerRef, peersRef)
       syncHostRoleFromState()
       stopSyncRetry()
     }
@@ -376,7 +421,11 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
       peersRef.current.delete(peerId)
       lastPushAt.delete(peerId)
-      commitPeerRoster(false, peerId)
+
+      const nextPeers = sortedPeers(peersRef.current.values())
+      if (peersRosterChanged(stateRef.current.peers, nextPeers)) {
+        hostCommit({ ...stateRef.current, peers: nextPeers }, true)
+      }
       resolveHostRole()
     }
 
@@ -497,7 +546,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
               {
                 id: generateId(),
                 peerId: myPeerId,
-                nickname,
+                nickname: nicknameRef.current,
                 text: trimmed,
                 timestamp: Date.now(),
               },
@@ -509,14 +558,14 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       }
 
       const hostPeerId = stateRef.current.hostPeerId
-      const payload = { text: trimmed, nickname, peerId: myPeerId }
+      const payload = { text: trimmed, nickname: nicknameRef.current, peerId: myPeerId }
       if (hostPeerId && hostPeerId !== myPeerId) {
         void chatActionRef.current?.send(payload, { target: hostPeerId })
       } else {
         void chatActionRef.current?.send(payload)
       }
     },
-    [nickname, myPeerId, hostCommit],
+    [myPeerId, hostCommit],
   )
 
   const addMovie = useCallback(
@@ -525,7 +574,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     ): Promise<string | null> => {
       const data: AddMoviePayload = {
         ...payload,
-        addedBy: nickname,
+        addedBy: nicknameRef.current,
         addedByPeerId: myPeerId,
       }
 
@@ -552,7 +601,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       }
       return null
     },
-    [nickname, myPeerId, hostCommit],
+    [myPeerId, hostCommit],
   )
 
   const startCountdown = useCallback(() => {

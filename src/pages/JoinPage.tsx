@@ -1,45 +1,26 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { randomMarioNickname } from '../lib/nicknames'
 import {
   decodeRoomCodeParam,
   encodeRoomCodeForUrl,
   generateRoomCode,
-  isValidRoomCode,
   normalizeRoomCode,
 } from '../lib/roomCode'
 import styles from './JoinPage.module.css'
 
-function randomNickname(): string {
-  const names = ['Luigi', 'Peach', 'Toad', 'Yoshi', 'Rosalina', 'Koopa', 'Waluigi', 'Mario']
-  return names[Math.floor(Math.random() * names.length)]
-}
-
 export function JoinPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [nickname, setNickname] = useState(() => {
-    const invited = searchParams.get('code')
-    return invited ? '' : randomNickname()
-  })
+  const [nickname, setNickname] = useState(() => randomMarioNickname())
   const [roomCode, setRoomCode] = useState(() => {
     const param = searchParams.get('code')
     return param ? decodeRoomCodeParam(param) : ''
   })
-  const [error, setError] = useState<string | null>(null)
-
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault()
-    const code = normalizeRoomCode(roomCode)
-    const name = nickname.trim()
-
-    if (!isValidRoomCode(code)) {
-      setError('Enter a room name between 1 and 120 characters.')
-      return
-    }
-    if (!name) {
-      setError('Enter a nickname.')
-      return
-    }
+    const name = nickname.trim() || randomMarioNickname()
+    const code = normalizeRoomCode(roomCode) || generateRoomCode()
 
     sessionStorage.setItem('party-lotto-nickname', name)
     navigate(`/room/${encodeRoomCodeForUrl(code)}`)
@@ -47,6 +28,10 @@ export function JoinPage() {
 
   const generateCode = useCallback(() => {
     setRoomCode(generateRoomCode())
+  }, [])
+
+  const suggestNickname = useCallback(() => {
+    setNickname(randomMarioNickname())
   }, [])
 
   const subtitle = useMemo(
@@ -63,14 +48,19 @@ export function JoinPage() {
 
         <form className={styles.form} onSubmit={handleSubmit}>
           <label htmlFor="nickname">Nickname</label>
-          <input
-            id="nickname"
-            value={nickname}
-            onChange={(e) => setNickname(e.target.value)}
-            placeholder="Your name"
-            maxLength={24}
-            autoFocus={Boolean(searchParams.get('code'))}
-          />
+          <div className={styles.codeRow}>
+            <input
+              id="nickname"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              placeholder="Mario"
+              maxLength={24}
+              autoFocus={Boolean(searchParams.get('code'))}
+            />
+            <button type="button" onClick={suggestNickname}>
+              Random
+            </button>
+          </div>
 
           <label htmlFor="room-code">Room name</label>
           <div className={styles.codeRow}>
@@ -85,8 +75,6 @@ export function JoinPage() {
               Generate
             </button>
           </div>
-
-          {error && <p className={styles.error}>{error}</p>}
 
           <button type="submit" className={styles.joinButton}>
             Join room
