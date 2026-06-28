@@ -22,7 +22,7 @@ import {
 import { getMoviePerimeterPosition } from '../lib/perimeterLayout'
 import { resolveUniqueNickname } from '../lib/nicknames'
 import { toTrysteroRoomId } from '../lib/roomCode'
-import { getTrysteroConnectionConfig } from '../lib/webrtcConfig'
+import { getTrysteroConnectionConfig, formatPeerConnectionError } from '../lib/webrtcConfig'
 
 type UseRoomResult = {
   roomState: RoomState
@@ -242,20 +242,24 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     peersRef.current.set(myPeerId, selfPeerRef.current)
 
     const trysteroRoomId = toTrysteroRoomId(roomCode)
-    const room = joinRoom(
-      {
-        appId: APP_ID,
-        ...getTrysteroConnectionConfig(),
-      },
-      trysteroRoomId,
-      {
-        onJoinError: (details) => {
-          setConnectionError(
-            `Peer connection failed (${details.error}). Try refreshing, or use the exact invite link from the host.`,
-          )
+    let cancelled = false
+    let teardown: (() => void) | undefined
+
+    void getTrysteroConnectionConfig().then((connectionConfig) => {
+      if (cancelled) return
+
+      const room = joinRoom(
+        {
+          appId: APP_ID,
+          ...connectionConfig,
         },
-      },
-    )
+        trysteroRoomId,
+        {
+          onJoinError: (details) => {
+            setConnectionError(formatPeerConnectionError(details.error))
+          },
+        },
+      )
 
     const announceAction = room.makeAction<AnnouncePayload>('announce')
     const stateAction = room.makeAction<RoomState>('stateSync')
@@ -712,7 +716,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       }
     }, 15000)
 
-    return () => {
+    teardown = () => {
       hasSyncedFromHostRef.current = false
       hasAnnouncedRef.current = false
       hasRemotePeerRef.current = false
@@ -731,6 +735,12 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       sendStateToPeerRef.current = () => {}
       void leaveAction.send({ peerId: myPeerId })
       void room.leave()
+    }
+    })
+
+    return () => {
+      cancelled = true
+      teardown?.()
     }
   }, [roomCode, nickname, myPeerId, hostCommit, beginRoulette])
 
