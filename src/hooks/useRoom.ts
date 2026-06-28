@@ -58,6 +58,21 @@ function createMovieEntry(data: AddMoviePayload): MovieEntry {
   }
 }
 
+function statesEqual(a: RoomState, b: RoomState): boolean {
+  return (
+    a.phase === b.phase &&
+    a.hostPeerId === b.hostPeerId &&
+    a.countdownEndsAt === b.countdownEndsAt &&
+    a.winnerId === b.winnerId &&
+    a.rouletteSeed === b.rouletteSeed &&
+    a.frozenOffset === b.frozenOffset &&
+    a.movies.length === b.movies.length &&
+    a.messages.length === b.messages.length &&
+    a.movies.every((movie, index) => movie.id === b.movies[index]?.id) &&
+    a.messages.every((message, index) => message.id === b.messages[index]?.id)
+  )
+}
+
 export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const myPeerId = selfId
   const joinedAtRef = useRef(Date.now())
@@ -101,6 +116,10 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       broadcastRef.current(next)
     }
   }, [myPeerId])
+
+  const isAuthoritativeHost = useCallback(() => {
+    return isHostRef.current && authoritativeHostRef.current
+  }, [])
 
   const isHost = useMemo(
     () => roomState.hostPeerId === myPeerId,
@@ -171,8 +190,14 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     receivedRemoteStateRef.current = false
     hasRemotePeerRef.current = false
 
+    const isAuthHost = () => isHostRef.current && authoritativeHostRef.current
+
+    const canBeAuthoritative = () =>
+      hasRoomContent(stateRef.current) ||
+      (!receivedRemoteState && !hasRemotePeerRef.current)
+
     const syncFullStateToPeers = () => {
-      if (!isHostRef.current || !authoritativeHostRef.current) return
+      if (!isAuthHost()) return
       if (
         hasRemotePeerRef.current &&
         isBootstrapState(stateRef.current) &&
@@ -225,14 +250,12 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       isHostRef.current = amHost
 
       if (amHost) {
-        if (hasRemotePeerRef.current && !receivedRemoteState) {
-          authoritativeHostRef.current = false
-          requestFullState()
-        } else {
-          authoritativeHostRef.current = true
-        }
+        authoritativeHostRef.current = canBeAuthoritative()
       } else {
         authoritativeHostRef.current = false
+        if (!receivedRemoteState) {
+          requestFullState()
+        }
       }
 
       if (newHostId === stateRef.current.hostPeerId) return
@@ -265,7 +288,6 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       peersRef.current.set(data.peerId, data)
       updatePeerCount()
       reelectHost()
-      syncFullStateToPeers()
 
       if (data.peerId !== myPeerId) {
         announceSelf()
@@ -282,6 +304,10 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       }
 
       if (hasRoomContent(local) && isBootstrapState(state)) {
+        return
+      }
+
+      if (statesEqual(local, state)) {
         return
       }
 
@@ -303,7 +329,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     chatAction.onMessage = (data, context) => {
-      if (!isHostRef.current || context.peerId === myPeerId) return
+      if (!isAuthHost() || context.peerId === myPeerId) return
 
       commitState(
         {
@@ -324,7 +350,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     addMovieAction.onMessage = (data, context) => {
-      if (!isHostRef.current || context.peerId === myPeerId) return
+      if (!isAuthHost() || context.peerId === myPeerId) return
       if (hasPeerVoted(stateRef.current.movies, data.addedByPeerId)) return
 
       commitState(
@@ -382,7 +408,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     window.addEventListener('pagehide', handlePageHide)
 
     const countdownCheck = window.setInterval(() => {
-      if (!isHostRef.current) return
+      if (!isAuthHost()) return
       const state = stateRef.current
       if (state.phase !== 'countdown' || !state.countdownEndsAt) return
 
@@ -424,7 +450,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       const trimmed = text.trim()
       if (!trimmed) return
 
-      if (isHostRef.current) {
+      if (isAuthoritativeHost()) {
         commitState(
           {
             ...stateRef.current,
@@ -449,7 +475,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
         })
       }
     },
-    [nickname, myPeerId, commitState],
+    [nickname, myPeerId, commitState, isAuthoritativeHost],
   )
 
   const addMovie = useCallback(
@@ -466,7 +492,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
         return 'You already picked a movie'
       }
 
-      if (isHostRef.current) {
+      if (isAuthoritativeHost()) {
         commitState(
           {
             ...stateRef.current,
@@ -480,11 +506,11 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       void addMovieActionRef.current?.send(data)
       return null
     },
-    [nickname, myPeerId, commitState],
+    [nickname, myPeerId, commitState, isAuthoritativeHost],
   )
 
   const startCountdown = useCallback(() => {
-    if (!isHostRef.current || stateRef.current.movies.length === 0) return
+    if (!isAuthoritativeHost() || stateRef.current.movies.length === 0) return
     if (stateRef.current.phase !== 'collecting') return
 
     commitState(
@@ -495,10 +521,10 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       },
       true,
     )
-  }, [commitState])
+  }, [commitState, isAuthoritativeHost])
 
   const resetRound = useCallback(() => {
-    if (!isHostRef.current) return
+    if (!isAuthoritativeHost()) return
 
     commitState(
       {
@@ -512,7 +538,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       },
       true,
     )
-  }, [commitState])
+  }, [commitState, isAuthoritativeHost])
 
   return {
     roomState,

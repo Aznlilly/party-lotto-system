@@ -75,6 +75,8 @@ export function PerimeterCarousel({
     return () => cancelAnimationFrame(frame)
   }, [isCrawling, crawlOffsetRef])
 
+  const movieIds = useMemo(() => movies.map((movie) => movie.id).join(','), [movies])
+
   useEffect(() => {
     if (phase !== 'roulette' || !rouletteSeed || !winnerId || movies.length === 0) {
       setHighlightPosition(null)
@@ -114,7 +116,7 @@ export function PerimeterCarousel({
       cancelled = true
       cancelAnimationFrame(frame)
     }
-  }, [phase, movies, winnerId, rouletteSeed])
+  }, [phase, movieIds, winnerId, rouletteSeed, movies.length])
 
   const offset =
     phase === 'frozen' || phase === 'roulette' || phase === 'winner'
