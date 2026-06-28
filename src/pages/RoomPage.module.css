@@ -46,16 +46,24 @@
 }
 
 .centerPanel {
-  width: min(100%, 560px);
+  width: min(100%, 720px);
   height: min(72vh, 640px);
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
 
+.chatRow {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 0.65rem;
+}
+
 .chatWrap {
   flex: 1;
   min-height: 0;
+  min-width: 0;
 }
 
 .startButton {
@@ -83,5 +91,9 @@
 @media (max-width: 640px) {
   .centerPanel {
     height: min(68vh, 560px);
+  }
+
+  .chatRow {
+    flex-direction: column;
   }
 }

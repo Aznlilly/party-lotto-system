@@ -3,6 +3,7 @@ import { Link, Navigate, useParams } from 'react-router-dom'
 import { ChatPanel } from '../components/ChatPanel'
 import { CountdownBadge } from '../components/CountdownBadge'
 import { MovieInput } from '../components/MovieInput'
+import { PeerList } from '../components/PeerList'
 import { PerimeterCarousel } from '../components/PerimeterCarousel'
 import { WinnerReveal } from '../components/WinnerReveal'
 import { useRoom } from '../hooks/useRoom'
@@ -19,6 +20,7 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
     roomState,
     myPeerId,
     isHost,
+    peers,
     peerCount,
     connected,
     crawlOffsetRef,
@@ -91,12 +93,19 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
             hasVoted={hasVoted}
             votedTitle={myVote?.title ?? null}
           />
-          <div className={styles.chatWrap}>
-            <ChatPanel
-              messages={roomState.messages}
-              onSend={sendChat}
-              disabled={roomState.phase === 'winner'}
+          <div className={styles.chatRow}>
+            <PeerList
+              peers={peers}
+              myPeerId={myPeerId}
+              hostPeerId={roomState.hostPeerId}
             />
+            <div className={styles.chatWrap}>
+              <ChatPanel
+                messages={roomState.messages}
+                onSend={sendChat}
+                disabled={roomState.phase === 'winner'}
+              />
+            </div>
           </div>
           {isHost && roomState.phase === 'collecting' && (
             <button

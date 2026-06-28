@@ -25,6 +25,7 @@ type UseRoomResult = {
   roomState: RoomState
   myPeerId: string
   isHost: boolean
+  peers: PeerInfo[]
   peerCount: number
   connected: boolean
   connectionError: string | null
@@ -72,6 +73,9 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     createInitialState(myPeerId),
   )
   const [peerCount, setPeerCount] = useState(1)
+  const [peers, setPeers] = useState<PeerInfo[]>(() => [
+    { peerId: myPeerId, nickname, joinedAt: joinedAtRef.current },
+  ])
   const [connected, setConnected] = useState(false)
   const [connectionError, setConnectionError] = useState<string | null>(null)
 
@@ -167,6 +171,9 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
     const updatePeerCount = () => {
       setPeerCount(peersRef.current.size)
+      setPeers(
+        Array.from(peersRef.current.values()).sort((a, b) => a.joinedAt - b.joinedAt),
+      )
     }
 
     const reelectHost = () => {
@@ -431,6 +438,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     roomState,
     myPeerId,
     isHost,
+    peers,
     peerCount,
     connected,
     connectionError,
