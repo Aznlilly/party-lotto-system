@@ -91,6 +91,17 @@ function peersRosterChanged(current: PeerInfo[], next: PeerInfo[]): boolean {
   )
 }
 
+function buildAuthoritativePeers(peers: Iterable<PeerInfo>): PeerInfo[] {
+  const committed: PeerInfo[] = []
+  for (const peer of sortedPeers(peers)) {
+    committed.push({
+      ...peer,
+      nickname: resolveUniqueNickname(peer.nickname, committed, peer.peerId),
+    })
+  }
+  return committed
+}
+
 function syncAssignedNickname(
   state: RoomState,
   myPeerId: string,
@@ -212,6 +223,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     const announceAction = room.makeAction<AnnouncePayload>('announce')
     const stateAction = room.makeAction<RoomState>('stateSync')
     const requestAction = room.makeAction<{ requesterId: string }>('requestState')
+    const requestAnnounceAction = room.makeAction<{ requesterId: string }>('requestAnnounce')
     const chatAction = room.makeAction<ChatPayload>('chat')
     const addMovieAction = room.makeAction<AddMoviePayload>('addMovie')
     const leaveAction = room.makeAction<{ peerId: string }>('peerLeave')
@@ -304,8 +316,17 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
       if (amHost) {
         stopSyncRetry()
-        if (stateRef.current.hostPeerId !== myPeerId) {
-          hostCommit({ ...stateRef.current, hostPeerId: myPeerId }, true)
+        const nextPeers = buildAuthoritativePeers(peersRef.current.values())
+        for (const peer of nextPeers) {
+          peersRef.current.set(peer.peerId, peer)
+        }
+        const hostChanged = stateRef.current.hostPeerId !== myPeerId
+        const peersChanged = peersRosterChanged(stateRef.current.peers, nextPeers)
+        if (hostChanged || peersChanged) {
+          hostCommit(
+            { ...stateRef.current, hostPeerId: myPeerId, peers: nextPeers },
+            true,
+          )
         }
         return
       }
@@ -325,15 +346,60 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       sendStateToPeerRef.current(stateRef.current, peerId)
     }
 
-    const announceToHost = () => {
-      if (hasAnnouncedRef.current) return
-      hasAnnouncedRef.current = true
-
-      void announceAction.send({
+    const sendAnnounce = (targetPeerId?: string) => {
+      const payload: AnnouncePayload = {
         peerId: myPeerId,
         nickname: nicknameRef.current,
         joinedAt: joinedAtRef.current,
-      })
+      }
+
+      if (targetPeerId) {
+        void announceAction.send(payload, { target: targetPeerId })
+        return
+      }
+
+      void announceAction.send(payload)
+    }
+
+    const announceToHost = () => {
+      const hostPeerId = stateRef.current.hostPeerId
+      if (hostPeerId && hostPeerId !== myPeerId) {
+        sendAnnounce(hostPeerId)
+        if (hasAnnouncedRef.current) return
+        hasAnnouncedRef.current = true
+        window.setTimeout(() => sendAnnounce(hostPeerId), 1200)
+        window.setTimeout(() => sendAnnounce(hostPeerId), 3500)
+        return
+      }
+
+      if (hasAnnouncedRef.current) return
+      hasAnnouncedRef.current = true
+      sendAnnounce()
+      window.setTimeout(() => sendAnnounce(), 1200)
+      window.setTimeout(() => sendAnnounce(), 3500)
+    }
+
+    const promptPeerToAnnounce = (peerId: string) => {
+      if (!isHostRef.current || peerId === myPeerId) return
+      if (stateRef.current.peers.some((peer) => peer.peerId === peerId)) return
+
+      void requestAnnounceAction.send({ requesterId: myPeerId }, { target: peerId })
+    }
+
+    const reconcileConnectedPeers = () => {
+      if (!isHostRef.current) return
+
+      for (const peerId of Object.keys(room.getPeers())) {
+        promptPeerToAnnounce(peerId)
+      }
+    }
+
+    const ensureRegisteredWithHost = () => {
+      if (isHostRef.current || !hasSyncedFromHostRef.current) return
+      if (stateRef.current.peers.some((peer) => peer.peerId === myPeerId)) return
+
+      hasAnnouncedRef.current = false
+      announceToHost()
     }
 
     const syncHostPeersFromState = () => {
@@ -344,7 +410,10 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     const commitPeerRoster = (peerId: string) => {
-      const nextPeers = sortedPeers(peersRef.current.values())
+      const nextPeers = buildAuthoritativePeers(peersRef.current.values())
+      for (const peer of nextPeers) {
+        peersRef.current.set(peer.peerId, peer)
+      }
       if (!peersRosterChanged(stateRef.current.peers, nextPeers)) {
         pushStateToPeer(peerId)
         return
@@ -363,12 +432,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
         return
       }
 
-      const assignedNickname = resolveUniqueNickname(
-        data.nickname,
-        sortedPeers(peersRef.current.values()),
-        data.peerId,
-      )
-      peersRef.current.set(data.peerId, { ...data, nickname: assignedNickname })
+      peersRef.current.set(data.peerId, data)
       if (data.peerId === myPeerId) return
 
       commitPeerRoster(data.peerId)
@@ -397,6 +461,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
         if (isHostRef.current) {
           syncHostPeersFromState()
         }
+        ensureRegisteredWithHost()
         stopSyncRetry()
         return
       }
@@ -407,12 +472,20 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       setRoomState(state)
       syncAssignedNickname(state, myPeerId, nicknameRef, selfPeerRef, peersRef)
       syncHostRoleFromState()
+      ensureRegisteredWithHost()
       stopSyncRetry()
     }
 
     requestAction.onMessage = (data) => {
       if (!isHostRef.current) return
       pushStateToPeer(data.requesterId)
+      promptPeerToAnnounce(data.requesterId)
+    }
+
+    requestAnnounceAction.onMessage = (_data, context) => {
+      const requesterId = context?.peerId
+      if (!requesterId) return
+      sendAnnounce(requesterId)
     }
 
     const removePeer = (peerId: string) => {
@@ -467,11 +540,20 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       )
     }
 
-    room.onPeerJoin = () => {
+    room.onPeerJoin = (peerId) => {
       hasRemotePeerRef.current = true
       setConnected(true)
       setConnectionError(null)
-      announceToHost()
+
+      // Trystero delivers actions reliably when targeted to the peer that just joined.
+      sendAnnounce(peerId)
+      if (isHostRef.current) {
+        promptPeerToAnnounce(peerId)
+        window.setTimeout(() => promptPeerToAnnounce(peerId), 1500)
+        window.setTimeout(() => promptPeerToAnnounce(peerId), 4000)
+      } else {
+        announceToHost()
+      }
       resolveHostRole()
     }
 
@@ -513,6 +595,8 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       }
     }, 200)
 
+    const rosterReconcileTimer = window.setInterval(reconcileConnectedPeers, 5000)
+
     return () => {
       hasSyncedFromHostRef.current = false
       hasAnnouncedRef.current = false
@@ -521,6 +605,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       window.clearTimeout(connectTimer)
       stopSyncRetry()
       window.clearInterval(countdownCheck)
+      window.clearInterval(rosterReconcileTimer)
       if (rouletteTimerRef.current) window.clearTimeout(rouletteTimerRef.current)
       announceActionRef.current = null
       chatActionRef.current = null
