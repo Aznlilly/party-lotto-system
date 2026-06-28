@@ -27,6 +27,31 @@
   color: rgba(255, 255, 255, 0.6);
 }
 
+.shareButton {
+  margin-top: 0.45rem;
+  border: 1px solid rgba(255, 213, 79, 0.35);
+  background: rgba(255, 213, 79, 0.12);
+  color: #ffd54f;
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.connectionBanner {
+  position: relative;
+  z-index: 6;
+  margin: 0 1.25rem;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 107, 107, 0.45);
+  background: rgba(120, 20, 20, 0.75);
+  color: #ffd7d7;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
 .leaveLink {
   color: rgba(255, 255, 255, 0.75);
   text-decoration: none;

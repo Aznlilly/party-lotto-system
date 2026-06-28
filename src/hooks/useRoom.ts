@@ -137,6 +137,9 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const hasSyncedFromHostRef = useRef(false)
   const hasAnnouncedRef = useRef(false)
   const hasRemotePeerRef = useRef(false)
+  const expectExistingRoomRef = useRef(
+    sessionStorage.getItem('party-lotto-expect-existing') === '1',
+  )
   const broadcastRef = useRef<(state: RoomState) => void>(() => {})
   const sendStateToPeerRef = useRef<(state: RoomState, peerId: string) => void>(() => {})
 
@@ -218,7 +221,20 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     peersRef.current.set(myPeerId, selfPeerRef.current)
 
     const trysteroRoomId = toTrysteroRoomId(roomCode)
-    const room = joinRoom({ appId: APP_ID }, trysteroRoomId)
+    const room = joinRoom(
+      {
+        appId: APP_ID,
+        relayConfig: { redundancy: 10 },
+      },
+      trysteroRoomId,
+      {
+        onJoinError: (details) => {
+          setConnectionError(
+            `Peer connection failed (${details.error}). Try refreshing, or use the exact invite link from the host.`,
+          )
+        },
+      },
+    )
 
     const announceAction = room.makeAction<AnnouncePayload>('announce')
     const stateAction = room.makeAction<RoomState>('stateSync')
@@ -264,7 +280,23 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
     const requestStateFromHost = () => {
       if (!needsHostSync()) return
-      void requestAction.send({ requesterId: myPeerId })
+
+      const payload = { requesterId: myPeerId }
+      const hostPeerId = stateRef.current.hostPeerId
+      if (hostPeerId && hostPeerId !== myPeerId) {
+        void requestAction.send(payload, { target: hostPeerId })
+        return
+      }
+
+      const connectedIds = Object.keys(room.getPeers())
+      if (connectedIds.length > 0) {
+        for (const peerId of connectedIds) {
+          void requestAction.send(payload, { target: peerId })
+        }
+        return
+      }
+
+      void requestAction.send(payload)
     }
 
     const startSyncRetry = () => {
@@ -281,7 +313,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
         attempts += 1
         requestStateFromHost()
-        if (attempts >= 20) {
+        if (!expectExistingRoomRef.current && attempts >= 30) {
           stopSyncRetry()
         }
       }, 1500)
@@ -308,6 +340,14 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
         peerList.length,
         hasSyncedFromHostRef.current,
       )) {
+        amHost = false
+      }
+
+      if (
+        !hasRemotePeerRef.current &&
+        expectExistingRoomRef.current &&
+        !hasSyncedFromHostRef.current
+      ) {
         amHost = false
       }
 
@@ -462,6 +502,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
           syncHostPeersFromState()
         }
         ensureRegisteredWithHost()
+        setConnectionError(null)
         stopSyncRetry()
         return
       }
@@ -473,6 +514,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       syncAssignedNickname(state, myPeerId, nicknameRef, selfPeerRef, peersRef)
       syncHostRoleFromState()
       ensureRegisteredWithHost()
+      setConnectionError(null)
       stopSyncRetry()
     }
 
@@ -597,12 +639,38 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
     const rosterReconcileTimer = window.setInterval(reconcileConnectedPeers, 5000)
 
+    const connectionWatchdog = window.setTimeout(() => {
+      if (hasSyncedFromHostRef.current) return
+
+      const connectedPeerCount = Object.keys(room.getPeers()).length
+      const rosterCount = stateRef.current.peers.length
+
+      if (expectExistingRoomRef.current && rosterCount === 1 && connectedPeerCount === 0) {
+        setConnectionError(
+          `Can't find room "${roomCode}". Use the exact invite link from the host — room names must match exactly (spacing and spelling).`,
+        )
+        return
+      }
+
+      if (
+        isHostRef.current &&
+        rosterCount === 1 &&
+        connectedPeerCount === 0 &&
+        !expectExistingRoomRef.current
+      ) {
+        setConnectionError(
+          'You are alone in this room. Share the invite link below so friends join the same room.',
+        )
+      }
+    }, 15000)
+
     return () => {
       hasSyncedFromHostRef.current = false
       hasAnnouncedRef.current = false
       hasRemotePeerRef.current = false
       window.removeEventListener('pagehide', handlePageHide)
       window.clearTimeout(connectTimer)
+      window.clearTimeout(connectionWatchdog)
       stopSyncRetry()
       window.clearInterval(countdownCheck)
       window.clearInterval(rosterReconcileTimer)

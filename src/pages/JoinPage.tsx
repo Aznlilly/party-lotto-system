@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { randomMarioNickname } from '../lib/nicknames'
 import {
@@ -17,12 +17,22 @@ export function JoinPage() {
     const param = searchParams.get('code')
     return param ? decodeRoomCodeParam(param) : ''
   })
+
+  useEffect(() => {
+    if (searchParams.get('code')) {
+      sessionStorage.setItem('party-lotto-expect-existing', '1')
+    }
+  }, [searchParams])
+
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault()
     const name = nickname.trim() || randomMarioNickname()
-    const code = normalizeRoomCode(roomCode) || generateRoomCode()
+    const submittedCode = normalizeRoomCode(roomCode)
+    const code = submittedCode || generateRoomCode()
+    const joiningViaInvite = Boolean(searchParams.get('code'))
 
     sessionStorage.setItem('party-lotto-nickname', name)
+    sessionStorage.setItem('party-lotto-expect-existing', joiningViaInvite ? '1' : '0')
     navigate(`/room/${encodeRoomCodeForUrl(code)}`)
   }
 

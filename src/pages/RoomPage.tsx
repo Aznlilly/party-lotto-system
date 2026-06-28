@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { ChatPanel } from '../components/ChatPanel'
 import { CountdownBadge } from '../components/CountdownBadge'
@@ -7,7 +7,7 @@ import { PeerList } from '../components/PeerList'
 import { PerimeterCarousel } from '../components/PerimeterCarousel'
 import { WinnerReveal } from '../components/WinnerReveal'
 import { useRoom } from '../hooks/useRoom'
-import { decodeRoomCodeFromUrl, encodeRoomCodeForUrl } from '../lib/roomCode'
+import { buildRoomShareUrl, decodeRoomCodeFromUrl, encodeRoomCodeForUrl } from '../lib/roomCode'
 import styles from './RoomPage.module.css'
 
 type RoomPageContentProps = {
@@ -21,12 +21,16 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
     myPeerId,
     isHost,
     connected,
+    connectionError,
     crawlOffsetRef,
     sendChat,
     addMovie,
     startCountdown,
     resetRound,
   } = useRoom(roomCode, nickname)
+
+  const [copied, setCopied] = useState(false)
+  const shareUrl = useMemo(() => buildRoomShareUrl(roomCode), [roomCode])
 
   const myVote = useMemo(
     () => roomState.movies.find((movie) => movie.addedByPeerId === myPeerId) ?? null,
@@ -45,6 +49,17 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
 
   const handleLeave = () => {
     sessionStorage.removeItem('party-lotto-nickname')
+    sessionStorage.removeItem('party-lotto-expect-existing')
+  }
+
+  const handleCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      window.prompt('Copy this invite link:', shareUrl)
+    }
   }
 
   return (
@@ -77,11 +92,20 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
             {connected ? `${roomState.peers.length} connected` : 'Connecting...'}
             {isHost ? ' · You are host' : ''}
           </p>
+          <button type="button" className={styles.shareButton} onClick={handleCopyLink}>
+            {copied ? 'Link copied!' : 'Copy invite link'}
+          </button>
         </div>
         <Link to="/" className={styles.leaveLink} onClick={handleLeave}>
           Leave
         </Link>
       </header>
+
+      {connectionError && (
+        <div className={styles.connectionBanner} role="alert">
+          {connectionError}
+        </div>
+      )}
 
       <main className={styles.main}>
         <div className={styles.centerPanel}>

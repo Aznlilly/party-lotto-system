@@ -51,3 +51,8 @@ export function generateRoomCode(length = GENERATED_CODE_LENGTH): string {
   }
   return code
 }
+
+export function buildRoomShareUrl(displayCode: string): string {
+  const base = import.meta.env.BASE_URL.replace(/\/$/, '')
+  return `${window.location.origin}${base}/#/room/${encodeRoomCodeForUrl(displayCode)}`
+}

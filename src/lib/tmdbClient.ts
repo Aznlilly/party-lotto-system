@@ -94,12 +94,28 @@ async function readTmdbError(response: Response): Promise<string> {
   return 'Failed to search TMDB. Try again in a moment.'
 }
 
+function networkSearchError(cause: unknown): Error {
+  const message =
+    cause instanceof Error ? cause.message : 'Network request failed.'
+  if (/failed to fetch|networkerror|load failed/i.test(message)) {
+    return new Error(
+      'Could not reach TMDB (network blocked or offline). Use "Title + poster URL" instead, or try again.',
+    )
+  }
+  return cause instanceof Error ? cause : new Error(message)
+}
+
 export async function searchMovies(query: string): Promise<MovieMetadata[]> {
   const trimmed = query.trim()
   if (trimmed.length < 2) return []
 
   const { url, headers } = buildSearchRequest(trimmed)
-  const response = await fetch(url, { headers })
+  let response: Response
+  try {
+    response = await fetch(url, { headers })
+  } catch (error) {
+    throw networkSearchError(error)
+  }
 
   if (!response.ok) {
     throw new Error(await readTmdbError(response))
