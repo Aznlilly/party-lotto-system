@@ -21,6 +21,7 @@ export type ChatMessage = {
 export type RoomState = {
   hostPeerId: string
   revision: number
+  peers: PeerInfo[]
   movies: MovieEntry[]
   messages: ChatMessage[]
   phase: RoomPhase
@@ -76,10 +77,11 @@ export function hasRoomContent(state: RoomState): boolean {
   return !isBootstrapState(state)
 }
 
-export function createInitialState(hostPeerId: string): RoomState {
+export function createInitialState(hostPeerId: string, selfPeer: PeerInfo): RoomState {
   return {
     hostPeerId,
     revision: 0,
+    peers: [selfPeer],
     movies: [],
     messages: [],
     phase: 'collecting',

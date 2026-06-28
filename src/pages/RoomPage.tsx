@@ -20,8 +20,6 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
     roomState,
     myPeerId,
     isHost,
-    peers,
-    peerCount,
     connected,
     crawlOffsetRef,
     sendChat,
@@ -76,7 +74,7 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
         <div>
           <p className={styles.roomLabel}>Room {roomCode}</p>
           <p className={styles.meta}>
-            {connected ? `${peerCount} connected` : 'Connecting...'}
+            {connected ? `${roomState.peers.length} connected` : 'Connecting...'}
             {isHost ? ' · You are host' : ''}
           </p>
         </div>
@@ -95,7 +93,7 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
           />
           <div className={styles.chatRow}>
             <PeerList
-              peers={peers}
+              peers={roomState.peers}
               myPeerId={myPeerId}
               hostPeerId={roomState.hostPeerId}
             />

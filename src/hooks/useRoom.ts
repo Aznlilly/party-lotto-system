@@ -25,8 +25,6 @@ type UseRoomResult = {
   roomState: RoomState
   myPeerId: string
   isHost: boolean
-  peers: PeerInfo[]
-  peerCount: number
   connected: boolean
   connectionError: string | null
   crawlOffsetRef: React.MutableRefObject<number>
@@ -64,30 +62,40 @@ function shouldApplyRemoteState(local: RoomState, remote: RoomState): boolean {
   return stateRevision(remote) > stateRevision(local)
 }
 
+function sortedPeers(peers: Iterable<PeerInfo>): PeerInfo[] {
+  return Array.from(peers).sort((a, b) => {
+    if (a.joinedAt !== b.joinedAt) return a.joinedAt - b.joinedAt
+    return a.peerId.localeCompare(b.peerId)
+  })
+}
+
 export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const myPeerId = selfId
   const joinedAtRef = useRef(Date.now())
+  const selfPeerRef = useRef<PeerInfo>({
+    peerId: myPeerId,
+    nickname,
+    joinedAt: joinedAtRef.current,
+  })
   const peersRef = useRef<Map<string, PeerInfo>>(new Map())
-  const stateRef = useRef<RoomState>(createInitialState(myPeerId))
+  const stateRef = useRef<RoomState>(
+    createInitialState(myPeerId, selfPeerRef.current),
+  )
   const crawlOffsetRef = useRef(0)
   const rouletteTimerRef = useRef<number | null>(null)
   const isHostRef = useRef(false)
   const hasSyncedFromHostRef = useRef(false)
   const hasAnnouncedRef = useRef(false)
-  const awaitingPeerListRef = useRef(false)
   const broadcastRef = useRef<(state: RoomState) => void>(() => {})
   const sendStateToPeerRef = useRef<(state: RoomState, peerId: string) => void>(() => {})
 
   const chatActionRef = useRef<MessageAction<ChatPayload> | null>(null)
   const addMovieActionRef = useRef<MessageAction<AddMoviePayload> | null>(null)
+  const announceActionRef = useRef<MessageAction<AnnouncePayload> | null>(null)
 
   const [roomState, setRoomState] = useState<RoomState>(() =>
-    createInitialState(myPeerId),
+    createInitialState(myPeerId, selfPeerRef.current),
   )
-  const [peerCount, setPeerCount] = useState(1)
-  const [peers, setPeers] = useState<PeerInfo[]>(() => [
-    { peerId: myPeerId, nickname, joinedAt: joinedAtRef.current },
-  ])
   const [connected, setConnected] = useState(false)
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const [isHost, setIsHost] = useState(true)
@@ -144,11 +152,12 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   }, [hostCommit])
 
   useEffect(() => {
-    peersRef.current.set(myPeerId, {
+    selfPeerRef.current = {
       peerId: myPeerId,
       nickname,
       joinedAt: joinedAtRef.current,
-    })
+    }
+    peersRef.current.set(myPeerId, selfPeerRef.current)
 
     const trysteroRoomId = toTrysteroRoomId(roomCode)
     const room = joinRoom({ appId: APP_ID }, trysteroRoomId)
@@ -160,6 +169,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     const addMovieAction = room.makeAction<AddMoviePayload>('addMovie')
     const leaveAction = room.makeAction<{ peerId: string }>('peerLeave')
 
+    announceActionRef.current = announceAction
     chatActionRef.current = chatAction
     addMovieActionRef.current = addMovieAction
 
@@ -206,45 +216,46 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       }, 1500)
     }
 
-    const updatePeerCount = () => {
-      setPeerCount(peersRef.current.size)
-      setPeers(
-        Array.from(peersRef.current.values()).sort((a, b) => a.joinedAt - b.joinedAt),
-      )
+    const syncHostRoleFromState = () => {
+      const amHost = stateRef.current.hostPeerId === myPeerId
+      isHostRef.current = amHost
+      setIsHost(amHost)
     }
 
     const resolveHostRole = () => {
-      const peerList = Array.from(peersRef.current.values())
+      if (hasSyncedFromHostRef.current) {
+        syncHostRoleFromState()
+        return
+      }
+
+      const peerList = sortedPeers(peersRef.current.values())
       const electedId = electHost(peerList)
-      const amElected = electedId === myPeerId
-
-      if (peerList.length > 1) {
-        awaitingPeerListRef.current = false
-      }
-
-      let amHost = false
-      if (amElected && !hasSyncedFromHostRef.current) {
-        amHost = !(awaitingPeerListRef.current && peerList.length === 1)
-      } else if (amElected && hasSyncedFromHostRef.current) {
-        amHost = true
-        hasSyncedFromHostRef.current = false
-      }
+      const amHost = electedId === myPeerId
 
       isHostRef.current = amHost
       setIsHost(amHost)
 
       if (amHost) {
         stopSyncRetry()
-        if (stateRef.current.hostPeerId !== myPeerId) {
-          hostCommit({ ...stateRef.current, hostPeerId: myPeerId }, true)
+        const nextPeers = sortedPeers(peersRef.current.values())
+        if (
+          stateRef.current.hostPeerId !== myPeerId ||
+          stateRef.current.peers.length !== nextPeers.length
+        ) {
+          hostCommit(
+            {
+              ...stateRef.current,
+              hostPeerId: myPeerId,
+              peers: nextPeers,
+            },
+            true,
+          )
         }
         return
       }
 
-      if (!hasSyncedFromHostRef.current) {
-        requestStateFromHost()
-        startSyncRetry()
-      }
+      requestStateFromHost()
+      startSyncRetry()
     }
 
     const pushStateToPeer = (peerId: string) => {
@@ -258,25 +269,45 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       sendStateToPeerRef.current(stateRef.current, peerId)
     }
 
-    const announceOnce = () => {
+    const announceToHost = () => {
       if (hasAnnouncedRef.current) return
       hasAnnouncedRef.current = true
-      void announceAction.send({
+
+      const payload: AnnouncePayload = {
         peerId: myPeerId,
         nickname,
         joinedAt: joinedAtRef.current,
-      })
+      }
+
+      const hostPeerId = stateRef.current.hostPeerId
+      if (hostPeerId && hostPeerId !== myPeerId) {
+        void announceAction.send(payload, { target: hostPeerId })
+      } else {
+        void announceAction.send(payload)
+      }
+    }
+
+    const commitPeerRoster = (isNewPeer: boolean, peerId: string) => {
+      const nextPeers = sortedPeers(peersRef.current.values())
+      const peersChanged =
+        nextPeers.length !== stateRef.current.peers.length ||
+        nextPeers.some((peer, index) => peer.peerId !== stateRef.current.peers[index]?.peerId)
+
+      if (peersChanged) {
+        hostCommit({ ...stateRef.current, peers: nextPeers }, true)
+      }
+
+      if (isNewPeer && peerId !== myPeerId) {
+        pushStateToPeer(peerId)
+      }
     }
 
     announceAction.onMessage = (data) => {
+      if (!isHostRef.current) return
+
       const isNewPeer = !peersRef.current.has(data.peerId)
       peersRef.current.set(data.peerId, data)
-      updatePeerCount()
-      resolveHostRole()
-
-      if (isHostRef.current && isNewPeer && data.peerId !== myPeerId) {
-        pushStateToPeer(data.peerId)
-      }
+      commitPeerRoster(isNewPeer, data.peerId)
     }
 
     stateAction.onMessage = (state, context) => {
@@ -287,10 +318,9 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       if (!shouldApplyRemoteState(stateRef.current, state)) return
 
       hasSyncedFromHostRef.current = true
-      isHostRef.current = false
-      setIsHost(false)
       stateRef.current = state
       setRoomState(state)
+      syncHostRoleFromState()
       stopSyncRetry()
     }
 
@@ -299,12 +329,18 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       pushStateToPeer(data.requesterId)
     }
 
-    leaveAction.onMessage = (data) => {
-      if (data.peerId === myPeerId) return
-      peersRef.current.delete(data.peerId)
-      lastPushAt.delete(data.peerId)
-      updatePeerCount()
+    const removePeer = (peerId: string) => {
+      if (!isHostRef.current || peerId === myPeerId) return
+      if (!peersRef.current.has(peerId)) return
+
+      peersRef.current.delete(peerId)
+      lastPushAt.delete(peerId)
+      commitPeerRoster(false, peerId)
       resolveHostRole()
+    }
+
+    leaveAction.onMessage = (data) => {
+      removePeer(data.peerId)
     }
 
     chatAction.onMessage = (data, context) => {
@@ -342,25 +378,21 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     room.onPeerJoin = () => {
-      if (peersRef.current.size === 1 && !isHostRef.current) {
-        awaitingPeerListRef.current = true
-      }
       setConnected(true)
       setConnectionError(null)
-      announceOnce()
+      announceToHost()
+      if (!isHostRef.current) {
+        requestStateFromHost()
+      }
     }
 
     room.onPeerLeave = (peerId) => {
-      if (peerId === myPeerId) return
-      peersRef.current.delete(peerId)
-      lastPushAt.delete(peerId)
-      updatePeerCount()
-      resolveHostRole()
+      removePeer(peerId)
     }
 
     const connectTimer = window.setTimeout(() => {
       setConnected(true)
-      announceOnce()
+      announceToHost()
       resolveHostRole()
     }, 800)
 
@@ -395,12 +427,12 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     return () => {
       hasSyncedFromHostRef.current = false
       hasAnnouncedRef.current = false
-      awaitingPeerListRef.current = false
       window.removeEventListener('pagehide', handlePageHide)
       window.clearTimeout(connectTimer)
       stopSyncRetry()
       window.clearInterval(countdownCheck)
       if (rouletteTimerRef.current) window.clearTimeout(rouletteTimerRef.current)
+      announceActionRef.current = null
       chatActionRef.current = null
       addMovieActionRef.current = null
       broadcastRef.current = () => {}
@@ -517,8 +549,6 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     roomState,
     myPeerId,
     isHost,
-    peers,
-    peerCount,
     connected,
     connectionError,
     crawlOffsetRef,
