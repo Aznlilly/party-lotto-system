@@ -19,6 +19,7 @@ import {
   pickRandomIndex,
 } from '../lib/rouletteEngine'
 import { getMoviePerimeterPosition } from '../lib/perimeterLayout'
+import { toTrysteroRoomId } from '../lib/roomCode'
 
 type UseRoomResult = {
   roomState: RoomState
@@ -134,19 +135,34 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       joinedAt: joinedAtRef.current,
     })
 
-    const room = joinRoom({ appId: APP_ID }, roomCode.toUpperCase())
+    const trysteroRoomId = toTrysteroRoomId(roomCode)
+    const room = joinRoom({ appId: APP_ID }, trysteroRoomId)
 
     const announceAction = room.makeAction<AnnouncePayload>('announce')
     const stateAction = room.makeAction<RoomState>('stateSync')
     const requestAction = room.makeAction<{ requesterId: string }>('requestState')
     const chatAction = room.makeAction<ChatPayload>('chat')
     const addMovieAction = room.makeAction<AddMoviePayload>('addMovie')
+    const leaveAction = room.makeAction<{ peerId: string }>('peerLeave')
 
     chatActionRef.current = chatAction
     addMovieActionRef.current = addMovieAction
 
     broadcastRef.current = (state: RoomState) => {
       void stateAction.send(state)
+    }
+
+    let receivedRemoteState = false
+
+    const createFreshRoom = () => {
+      const fresh = createInitialState(myPeerId)
+      commitState(fresh, true)
+    }
+
+    const resetRoomIfHostAlone = () => {
+      if (!isHostRef.current) return
+      if (peersRef.current.size > 1) return
+      createFreshRoom()
     }
 
     const updatePeerCount = () => {
@@ -175,6 +191,14 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       })
     }
 
+    const handlePeerLeave = (peerId: string) => {
+      if (peerId === myPeerId) return
+      peersRef.current.delete(peerId)
+      updatePeerCount()
+      reelectHost()
+      resetRoomIfHostAlone()
+    }
+
     announceAction.onMessage = (data) => {
       peersRef.current.set(data.peerId, data)
       updatePeerCount()
@@ -186,6 +210,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     stateAction.onMessage = (state) => {
+      receivedRemoteState = true
       stateRef.current = state
       setRoomState(state)
     }
@@ -194,6 +219,10 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       if (isHostRef.current) {
         broadcastRef.current(stateRef.current)
       }
+    }
+
+    leaveAction.onMessage = (data) => {
+      handlePeerLeave(data.peerId)
     }
 
     chatAction.onMessage = (data, context) => {
@@ -242,9 +271,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     room.onPeerLeave = (peerId) => {
-      peersRef.current.delete(peerId)
-      updatePeerCount()
-      reelectHost()
+      handlePeerLeave(peerId)
     }
 
     const connectTimer = window.setTimeout(() => {
@@ -255,6 +282,20 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
         void requestAction.send({ requesterId: myPeerId })
       }
     }, 1500)
+
+    const bootstrapTimer = window.setTimeout(() => {
+      if (receivedRemoteState) return
+      if (peersRef.current.size > 1) return
+      if (stateRef.current.movies.length > 0 || stateRef.current.messages.length > 0) return
+      createFreshRoom()
+    }, 2800)
+
+    const handlePageHide = () => {
+      void leaveAction.send({ peerId: myPeerId })
+      void room.leave()
+    }
+
+    window.addEventListener('pagehide', handlePageHide)
 
     const countdownCheck = window.setInterval(() => {
       if (!isHostRef.current) return
@@ -278,12 +319,15 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }, 200)
 
     return () => {
+      window.removeEventListener('pagehide', handlePageHide)
       window.clearTimeout(connectTimer)
+      window.clearTimeout(bootstrapTimer)
       window.clearInterval(countdownCheck)
       if (rouletteTimerRef.current) window.clearTimeout(rouletteTimerRef.current)
       chatActionRef.current = null
       addMovieActionRef.current = null
       broadcastRef.current = () => {}
+      void leaveAction.send({ peerId: myPeerId })
       void room.leave()
     }
   }, [roomCode, nickname, myPeerId, commitState, beginRoulette])

@@ -1,5 +1,11 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import {
+  decodeRoomCodeParam,
+  encodeRoomCodeForUrl,
+  isValidRoomCode,
+  normalizeRoomCode,
+} from '../lib/roomCode'
 import styles from './JoinPage.module.css'
 
 function randomNickname(): string {
@@ -10,17 +16,23 @@ function randomNickname(): string {
 export function JoinPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [nickname, setNickname] = useState(() => randomNickname())
-  const [roomCode, setRoomCode] = useState(() => searchParams.get('code')?.toUpperCase() ?? '')
+  const [nickname, setNickname] = useState(() => {
+    const invited = searchParams.get('code')
+    return invited ? '' : randomNickname()
+  })
+  const [roomCode, setRoomCode] = useState(() => {
+    const param = searchParams.get('code')
+    return param ? decodeRoomCodeParam(param) : ''
+  })
   const [error, setError] = useState<string | null>(null)
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault()
-    const code = roomCode.trim().toUpperCase()
+    const code = normalizeRoomCode(roomCode)
     const name = nickname.trim()
 
-    if (!code || code.length < 3) {
-      setError('Enter a room code with at least 3 characters.')
+    if (!isValidRoomCode(code)) {
+      setError('Enter a room name between 1 and 120 characters.')
       return
     }
     if (!name) {
@@ -29,7 +41,7 @@ export function JoinPage() {
     }
 
     sessionStorage.setItem('party-lotto-nickname', name)
-    navigate(`/room/${encodeURIComponent(code)}`)
+    navigate(`/room/${encodeRoomCodeForUrl(code)}`)
   }
 
   const generateCode = useCallback(() => {
@@ -59,17 +71,19 @@ export function JoinPage() {
             id="nickname"
             value={nickname}
             onChange={(e) => setNickname(e.target.value)}
+            placeholder="Your name"
             maxLength={24}
+            autoFocus={Boolean(searchParams.get('code'))}
           />
 
-          <label htmlFor="room-code">Room code</label>
+          <label htmlFor="room-code">Room name</label>
           <div className={styles.codeRow}>
             <input
               id="room-code"
               value={roomCode}
-              onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-              placeholder="ABC123"
-              maxLength={12}
+              onChange={(e) => setRoomCode(e.target.value)}
+              placeholder="fun room of doom and silliness"
+              maxLength={120}
             />
             <button type="button" onClick={generateCode}>
               Generate

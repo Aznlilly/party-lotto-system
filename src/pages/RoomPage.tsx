@@ -6,15 +6,15 @@ import { MovieInput } from '../components/MovieInput'
 import { PerimeterCarousel } from '../components/PerimeterCarousel'
 import { WinnerReveal } from '../components/WinnerReveal'
 import { useRoom } from '../hooks/useRoom'
+import { decodeRoomCodeFromUrl, encodeRoomCodeForUrl } from '../lib/roomCode'
 import styles from './RoomPage.module.css'
 
-export function RoomPage() {
-  const { code = '' } = useParams()
-  const roomCode = decodeURIComponent(code).toUpperCase()
-  const nickname =
-    sessionStorage.getItem('party-lotto-nickname') ??
-    `Guest-${Math.floor(Math.random() * 9999)}`
+type RoomPageContentProps = {
+  roomCode: string
+  nickname: string
+}
 
+function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
   const {
     roomState,
     myPeerId,
@@ -43,8 +43,8 @@ export function RoomPage() {
   const inputsDisabled =
     roomState.phase !== 'collecting' && roomState.phase !== 'countdown'
 
-  if (!roomCode) {
-    return <Navigate to="/" replace />
+  const handleLeave = () => {
+    sessionStorage.removeItem('party-lotto-nickname')
   }
 
   return (
@@ -78,7 +78,7 @@ export function RoomPage() {
             {isHost ? ' · You are host' : ''}
           </p>
         </div>
-        <Link to="/" className={styles.leaveLink}>
+        <Link to="/" className={styles.leaveLink} onClick={handleLeave}>
           Leave
         </Link>
       </header>
@@ -118,4 +118,20 @@ export function RoomPage() {
       </main>
     </div>
   )
+}
+
+export function RoomPage() {
+  const { code = '' } = useParams()
+  const roomCode = decodeRoomCodeFromUrl(code)
+  const storedNickname = sessionStorage.getItem('party-lotto-nickname')?.trim()
+
+  if (!roomCode) {
+    return <Navigate to="/" replace />
+  }
+
+  if (!storedNickname) {
+    return <Navigate to={`/?code=${encodeRoomCodeForUrl(roomCode)}`} replace />
+  }
+
+  return <RoomPageContent roomCode={roomCode} nickname={storedNickname} />
 }
