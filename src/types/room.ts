@@ -20,6 +20,7 @@ export type ChatMessage = {
 
 export type RoomState = {
   hostPeerId: string
+  revision: number
   movies: MovieEntry[]
   messages: ChatMessage[]
   phase: RoomPhase
@@ -78,6 +79,7 @@ export function hasRoomContent(state: RoomState): boolean {
 export function createInitialState(hostPeerId: string): RoomState {
   return {
     hostPeerId,
+    revision: 0,
     movies: [],
     messages: [],
     phase: 'collecting',

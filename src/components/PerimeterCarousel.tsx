@@ -124,7 +124,7 @@ function PerimeterCarouselInner({
 
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [isCrawling, movieIds, crawlOffsetRef, tileSize.tileWidth, tileSize.tileHeight])
+  }, [isCrawling, movieIds, crawlOffsetRef])
 
   useEffect(() => {
     if (isCrawling) return
@@ -136,7 +136,7 @@ function PerimeterCarouselInner({
       frozenOffsetRef.current,
       tileRefs.current,
     )
-  }, [isCrawling, movieIds, phase, frozenOffset, tileSize.tileWidth, tileSize.tileHeight])
+  }, [isCrawling, movieIds, phase, frozenOffset])
 
   useEffect(() => {
     if (phase !== 'roulette' || !rouletteSeed || !winnerId || movies.length === 0) {

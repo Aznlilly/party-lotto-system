@@ -56,19 +56,12 @@ function createMovieEntry(data: AddMoviePayload): MovieEntry {
   }
 }
 
-function statesEqual(a: RoomState, b: RoomState): boolean {
-  return (
-    a.phase === b.phase &&
-    a.hostPeerId === b.hostPeerId &&
-    a.countdownEndsAt === b.countdownEndsAt &&
-    a.winnerId === b.winnerId &&
-    a.rouletteSeed === b.rouletteSeed &&
-    a.frozenOffset === b.frozenOffset &&
-    a.movies.length === b.movies.length &&
-    a.messages.length === b.messages.length &&
-    a.movies.every((movie, index) => movie.id === b.movies[index]?.id) &&
-    a.messages.every((message, index) => message.id === b.messages[index]?.id)
-  )
+function stateRevision(state: RoomState): number {
+  return state.revision ?? 0
+}
+
+function shouldApplyRemoteState(local: RoomState, remote: RoomState): boolean {
+  return stateRevision(remote) > stateRevision(local)
 }
 
 export function useRoom(roomCode: string, nickname: string): UseRoomResult {
@@ -79,8 +72,9 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const crawlOffsetRef = useRef(0)
   const rouletteTimerRef = useRef<number | null>(null)
   const isHostRef = useRef(false)
-  const hasSeenRemotePeerRef = useRef(false)
-  const hasHostStateRef = useRef(false)
+  const hasSyncedFromHostRef = useRef(false)
+  const hasAnnouncedRef = useRef(false)
+  const awaitingPeerListRef = useRef(false)
   const broadcastRef = useRef<(state: RoomState) => void>(() => {})
   const sendStateToPeerRef = useRef<(state: RoomState, peerId: string) => void>(() => {})
 
@@ -98,13 +92,18 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const [isHost, setIsHost] = useState(true)
 
-  const commitState = useCallback((next: RoomState, shouldBroadcast: boolean) => {
+  const hostCommit = useCallback((next: RoomState, shouldBroadcast: boolean) => {
     if (!isHostRef.current) return
 
-    stateRef.current = next
-    setRoomState(next)
+    const stamped: RoomState = {
+      ...next,
+      revision: stateRevision(stateRef.current) + 1,
+    }
+
+    stateRef.current = stamped
+    setRoomState(stamped)
     if (shouldBroadcast) {
-      broadcastRef.current(next)
+      broadcastRef.current(stamped)
     }
   }, [])
 
@@ -119,7 +118,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     const animation = buildRouletteAnimation(rouletteSeed, winnerT)
     const duration = getRouletteDuration(animation)
 
-    commitState(
+    hostCommit(
       {
         ...stateRef.current,
         phase: movies.length === 1 ? 'winner' : 'roulette',
@@ -134,7 +133,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
     if (rouletteTimerRef.current) window.clearTimeout(rouletteTimerRef.current)
     rouletteTimerRef.current = window.setTimeout(() => {
-      commitState(
+      hostCommit(
         {
           ...stateRef.current,
           phase: 'winner',
@@ -142,7 +141,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
         true,
       )
     }, duration + 150)
-  }, [commitState])
+  }, [hostCommit])
 
   useEffect(() => {
     peersRef.current.set(myPeerId, {
@@ -173,6 +172,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     let syncRetryTimer: ReturnType<typeof window.setInterval> | undefined
+    const lastPushAt = new Map<string, number>()
 
     const stopSyncRetry = () => {
       if (syncRetryTimer !== undefined) {
@@ -182,16 +182,18 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     const requestStateFromHost = () => {
-      if (isHostRef.current || hasHostStateRef.current) return
+      if (isHostRef.current || hasSyncedFromHostRef.current) return
       void requestAction.send({ requesterId: myPeerId })
     }
 
     const startSyncRetry = () => {
-      if (syncRetryTimer !== undefined || isHostRef.current || hasHostStateRef.current) return
+      if (syncRetryTimer !== undefined || isHostRef.current || hasSyncedFromHostRef.current) {
+        return
+      }
 
       let attempts = 0
       syncRetryTimer = window.setInterval(() => {
-        if (isHostRef.current || hasHostStateRef.current) {
+        if (isHostRef.current || hasSyncedFromHostRef.current) {
           stopSyncRetry()
           return
         }
@@ -214,10 +216,18 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     const resolveHostRole = () => {
       const peerList = Array.from(peersRef.current.values())
       const electedId = electHost(peerList)
-      let amHost = electedId === myPeerId
+      const amElected = electedId === myPeerId
 
-      if (amHost && hasSeenRemotePeerRef.current && peerList.length === 1) {
-        amHost = false
+      if (peerList.length > 1) {
+        awaitingPeerListRef.current = false
+      }
+
+      let amHost = false
+      if (amElected && !hasSyncedFromHostRef.current) {
+        amHost = !(awaitingPeerListRef.current && peerList.length === 1)
+      } else if (amElected && hasSyncedFromHostRef.current) {
+        amHost = true
+        hasSyncedFromHostRef.current = false
       }
 
       isHostRef.current = amHost
@@ -226,12 +236,12 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       if (amHost) {
         stopSyncRetry()
         if (stateRef.current.hostPeerId !== myPeerId) {
-          commitState({ ...stateRef.current, hostPeerId: myPeerId }, true)
+          hostCommit({ ...stateRef.current, hostPeerId: myPeerId }, true)
         }
         return
       }
 
-      if (!hasHostStateRef.current) {
+      if (!hasSyncedFromHostRef.current) {
         requestStateFromHost()
         startSyncRetry()
       }
@@ -239,10 +249,18 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
     const pushStateToPeer = (peerId: string) => {
       if (!isHostRef.current || peerId === myPeerId) return
+
+      const now = Date.now()
+      const lastSent = lastPushAt.get(peerId) ?? 0
+      if (now - lastSent < 500) return
+      lastPushAt.set(peerId, now)
+
       sendStateToPeerRef.current(stateRef.current, peerId)
     }
 
-    const announceSelf = () => {
+    const announceOnce = () => {
+      if (hasAnnouncedRef.current) return
+      hasAnnouncedRef.current = true
       void announceAction.send({
         peerId: myPeerId,
         nickname,
@@ -251,12 +269,12 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     announceAction.onMessage = (data) => {
+      const isNewPeer = !peersRef.current.has(data.peerId)
       peersRef.current.set(data.peerId, data)
       updatePeerCount()
       resolveHostRole()
 
-      if (data.peerId !== myPeerId) {
-        announceSelf()
+      if (isHostRef.current && isNewPeer && data.peerId !== myPeerId) {
         pushStateToPeer(data.peerId)
       }
     }
@@ -264,12 +282,11 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     stateAction.onMessage = (state, context) => {
       const fromPeerId = context?.peerId
       if (!fromPeerId || fromPeerId === myPeerId) return
-
       if (isHostRef.current) return
       if (fromPeerId !== state.hostPeerId) return
-      if (statesEqual(stateRef.current, state)) return
+      if (!shouldApplyRemoteState(stateRef.current, state)) return
 
-      hasHostStateRef.current = true
+      hasSyncedFromHostRef.current = true
       isHostRef.current = false
       setIsHost(false)
       stateRef.current = state
@@ -285,6 +302,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     leaveAction.onMessage = (data) => {
       if (data.peerId === myPeerId) return
       peersRef.current.delete(data.peerId)
+      lastPushAt.delete(data.peerId)
       updatePeerCount()
       resolveHostRole()
     }
@@ -292,7 +310,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     chatAction.onMessage = (data, context) => {
       if (!isHostRef.current || context.peerId === myPeerId) return
 
-      commitState(
+      hostCommit(
         {
           ...stateRef.current,
           messages: [
@@ -314,7 +332,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       if (!isHostRef.current || context.peerId === myPeerId) return
       if (hasPeerVoted(stateRef.current.movies, data.addedByPeerId)) return
 
-      commitState(
+      hostCommit(
         {
           ...stateRef.current,
           movies: [...stateRef.current.movies, createMovieEntry(data)],
@@ -324,23 +342,25 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     room.onPeerJoin = () => {
-      hasSeenRemotePeerRef.current = true
+      if (peersRef.current.size === 1 && !isHostRef.current) {
+        awaitingPeerListRef.current = true
+      }
       setConnected(true)
       setConnectionError(null)
-      announceSelf()
-      resolveHostRole()
+      announceOnce()
     }
 
     room.onPeerLeave = (peerId) => {
       if (peerId === myPeerId) return
       peersRef.current.delete(peerId)
+      lastPushAt.delete(peerId)
       updatePeerCount()
       resolveHostRole()
     }
 
     const connectTimer = window.setTimeout(() => {
       setConnected(true)
-      announceSelf()
+      announceOnce()
       resolveHostRole()
     }, 800)
 
@@ -358,7 +378,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
       if (Date.now() >= state.countdownEndsAt) {
         const frozenOffset = crawlOffsetRef.current % 1
-        commitState(
+        hostCommit(
           {
             ...state,
             phase: 'frozen',
@@ -373,8 +393,9 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }, 200)
 
     return () => {
-      hasSeenRemotePeerRef.current = false
-      hasHostStateRef.current = false
+      hasSyncedFromHostRef.current = false
+      hasAnnouncedRef.current = false
+      awaitingPeerListRef.current = false
       window.removeEventListener('pagehide', handlePageHide)
       window.clearTimeout(connectTimer)
       stopSyncRetry()
@@ -387,7 +408,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       void leaveAction.send({ peerId: myPeerId })
       void room.leave()
     }
-  }, [roomCode, nickname, myPeerId, commitState, beginRoulette])
+  }, [roomCode, nickname, myPeerId, hostCommit, beginRoulette])
 
   const sendChat = useCallback(
     (text: string) => {
@@ -395,7 +416,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       if (!trimmed) return
 
       if (isHostRef.current) {
-        commitState(
+        hostCommit(
           {
             ...stateRef.current,
             messages: [
@@ -411,15 +432,18 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
           },
           true,
         )
+        return
+      }
+
+      const hostPeerId = stateRef.current.hostPeerId
+      const payload = { text: trimmed, nickname, peerId: myPeerId }
+      if (hostPeerId && hostPeerId !== myPeerId) {
+        void chatActionRef.current?.send(payload, { target: hostPeerId })
       } else {
-        void chatActionRef.current?.send({
-          text: trimmed,
-          nickname,
-          peerId: myPeerId,
-        })
+        void chatActionRef.current?.send(payload)
       }
     },
-    [nickname, myPeerId, commitState],
+    [nickname, myPeerId, hostCommit],
   )
 
   const addMovie = useCallback(
@@ -437,7 +461,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       }
 
       if (isHostRef.current) {
-        commitState(
+        hostCommit(
           {
             ...stateRef.current,
             movies: [...stateRef.current.movies, createMovieEntry(data)],
@@ -447,17 +471,22 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
         return null
       }
 
-      void addMovieActionRef.current?.send(data)
+      const hostPeerId = stateRef.current.hostPeerId
+      if (hostPeerId && hostPeerId !== myPeerId) {
+        void addMovieActionRef.current?.send(data, { target: hostPeerId })
+      } else {
+        void addMovieActionRef.current?.send(data)
+      }
       return null
     },
-    [nickname, myPeerId, commitState],
+    [nickname, myPeerId, hostCommit],
   )
 
   const startCountdown = useCallback(() => {
     if (!isHostRef.current || stateRef.current.movies.length === 0) return
     if (stateRef.current.phase !== 'collecting') return
 
-    commitState(
+    hostCommit(
       {
         ...stateRef.current,
         phase: 'countdown',
@@ -465,12 +494,12 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       },
       true,
     )
-  }, [commitState])
+  }, [hostCommit])
 
   const resetRound = useCallback(() => {
     if (!isHostRef.current) return
 
-    commitState(
+    hostCommit(
       {
         ...stateRef.current,
         phase: 'collecting',
@@ -482,7 +511,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       },
       true,
     )
-  }, [commitState])
+  }, [hostCommit])
 
   return {
     roomState,
