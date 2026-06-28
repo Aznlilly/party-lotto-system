@@ -1,0 +1,87 @@
+.page {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.header {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+}
+
+.roomLabel {
+  margin: 0;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: 0.04em;
+}
+
+.meta {
+  margin: 0.2rem 0 0;
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.leaveLink {
+  color: rgba(255, 255, 255, 0.75);
+  text-decoration: none;
+  font-size: 0.88rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.main {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 72px);
+  padding: 0 1rem 1.5rem;
+}
+
+.centerPanel {
+  width: min(100%, 560px);
+  height: min(72vh, 640px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.chatWrap {
+  flex: 1;
+  min-height: 0;
+}
+
+.startButton {
+  border: none;
+  background: linear-gradient(135deg, #ffd54f, #ffb300);
+  color: #1a1200;
+  font-weight: 800;
+  border-radius: 14px;
+  padding: 0.9rem 1rem;
+  cursor: pointer;
+}
+
+.startButton:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.phaseNotice {
+  margin: 0;
+  text-align: center;
+  color: #ffd54f;
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  .centerPanel {
+    height: min(68vh, 560px);
+  }
+}
