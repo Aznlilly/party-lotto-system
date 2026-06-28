@@ -61,6 +61,20 @@ export const APP_ID = 'party-movie-lotto-v1'
 export const COUNTDOWN_SECONDS = 30
 export const CRAWL_LAP_MS = 60000
 
+export function isBootstrapState(state: RoomState): boolean {
+  return (
+    state.movies.length === 0 &&
+    state.messages.length === 0 &&
+    state.phase === 'collecting' &&
+    state.countdownEndsAt === undefined &&
+    state.winnerId === undefined
+  )
+}
+
+export function hasRoomContent(state: RoomState): boolean {
+  return !isBootstrapState(state)
+}
+
 export function createInitialState(hostPeerId: string): RoomState {
   return {
     hostPeerId,

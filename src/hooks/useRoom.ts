@@ -12,6 +12,8 @@ import {
   type RoomState,
   createInitialState,
   electHost,
+  hasRoomContent,
+  isBootstrapState,
 } from '../types/room'
 import {
   buildRouletteAnimation,
@@ -65,6 +67,8 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const rouletteTimerRef = useRef<number | null>(null)
   const isHostRef = useRef(true)
   const authoritativeHostRef = useRef(false)
+  const hasRemotePeerRef = useRef(false)
+  const receivedRemoteStateRef = useRef(false)
   const broadcastRef = useRef<(state: RoomState) => void>(() => {})
 
   const chatActionRef = useRef<MessageAction<ChatPayload> | null>(null)
@@ -81,21 +85,27 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const [connectionError, setConnectionError] = useState<string | null>(null)
 
   const commitState = useCallback((next: RoomState, shouldBroadcast: boolean) => {
+    if (
+      !receivedRemoteStateRef.current &&
+      !hasRemotePeerRef.current &&
+      hasRoomContent(next) &&
+      next.hostPeerId === myPeerId
+    ) {
+      authoritativeHostRef.current = true
+      isHostRef.current = true
+    }
+
     stateRef.current = next
     setRoomState(next)
     if (shouldBroadcast && isHostRef.current && authoritativeHostRef.current) {
       broadcastRef.current(next)
     }
-  }, [])
+  }, [myPeerId])
 
   const isHost = useMemo(
     () => roomState.hostPeerId === myPeerId,
     [roomState.hostPeerId, myPeerId],
   )
-
-  useEffect(() => {
-    isHostRef.current = isHost
-  }, [isHost])
 
   const beginRoulette = useCallback((frozenOffset: number, movies: MovieEntry[]) => {
     if (movies.length === 0) return
@@ -158,9 +168,18 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     let receivedRemoteState = false
+    receivedRemoteStateRef.current = false
+    hasRemotePeerRef.current = false
 
     const syncFullStateToPeers = () => {
       if (!isHostRef.current || !authoritativeHostRef.current) return
+      if (
+        hasRemotePeerRef.current &&
+        isBootstrapState(stateRef.current) &&
+        !receivedRemoteState
+      ) {
+        return
+      }
       broadcastRef.current(stateRef.current)
     }
 
@@ -168,19 +187,26 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       void requestAction.send({ requesterId: myPeerId })
     }
 
-    const claimSoloHost = () => {
-      if (receivedRemoteState || peersRef.current.size > 1) return
+    const tryClaimAuthoritativeHost = () => {
+      if (receivedRemoteState || hasRemotePeerRef.current) return
+      if (electHost(Array.from(peersRef.current.values())) !== myPeerId) return
+
       authoritativeHostRef.current = true
       isHostRef.current = true
       if (stateRef.current.hostPeerId !== myPeerId) {
         commitState({ ...stateRef.current, hostPeerId: myPeerId }, true)
-      } else {
+      } else if (hasRoomContent(stateRef.current)) {
         syncFullStateToPeers()
       }
     }
 
+    let stateRetryTimer: ReturnType<typeof window.setInterval> | undefined
+
     const stopStateRetry = () => {
-      window.clearInterval(stateRetryTimer)
+      if (stateRetryTimer !== undefined) {
+        window.clearInterval(stateRetryTimer)
+        stateRetryTimer = undefined
+      }
     }
 
     const updatePeerCount = () => {
@@ -198,9 +224,14 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       const amHost = newHostId === myPeerId
       isHostRef.current = amHost
 
-      if (amHost && (receivedRemoteState || peerList.length === 1)) {
-        authoritativeHostRef.current = true
-      } else if (!amHost) {
+      if (amHost) {
+        if (hasRemotePeerRef.current && !receivedRemoteState) {
+          authoritativeHostRef.current = false
+          requestFullState()
+        } else {
+          authoritativeHostRef.current = true
+        }
+      } else {
         authoritativeHostRef.current = false
       }
 
@@ -241,8 +272,21 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       }
     }
 
-    stateAction.onMessage = (state) => {
+    stateAction.onMessage = (state, context) => {
+      if (context?.peerId === myPeerId) return
+
+      const local = stateRef.current
+
+      if (authoritativeHostRef.current) {
+        return
+      }
+
+      if (hasRoomContent(local) && isBootstrapState(state)) {
+        return
+      }
+
       receivedRemoteState = true
+      receivedRemoteStateRef.current = true
       authoritativeHostRef.current = false
       isHostRef.current = state.hostPeerId === myPeerId
       stateRef.current = state
@@ -293,6 +337,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     room.onPeerJoin = () => {
+      hasRemotePeerRef.current = true
       setConnected(true)
       setConnectionError(null)
       announceSelf()
@@ -308,27 +353,15 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       announceSelf()
       reelectHost()
       requestFullState()
-
-      if (isHostRef.current && peersRef.current.size === 1 && !receivedRemoteState) {
-        authoritativeHostRef.current = true
-        syncFullStateToPeers()
-      }
+      tryClaimAuthoritativeHost()
     }, 1500)
 
-    const earlyHostTimer = window.setTimeout(() => {
-      if (receivedRemoteState || peersRef.current.size > 1) return
-      authoritativeHostRef.current = true
-      isHostRef.current = true
-    }, 400)
-
     const bootstrapTimer = window.setTimeout(() => {
-      if (receivedRemoteState) return
-      if (peersRef.current.size > 1) return
-      claimSoloHost()
+      tryClaimAuthoritativeHost()
     }, 2800)
 
     let stateRetryCount = 0
-    const stateRetryTimer = window.setInterval(() => {
+    stateRetryTimer = window.setInterval(() => {
       if (receivedRemoteState || authoritativeHostRef.current) {
         stopStateRetry()
         return
@@ -370,9 +403,10 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }, 200)
 
     return () => {
+      hasRemotePeerRef.current = false
+      receivedRemoteStateRef.current = false
       window.removeEventListener('pagehide', handlePageHide)
       window.clearTimeout(connectTimer)
-      window.clearTimeout(earlyHostTimer)
       window.clearTimeout(bootstrapTimer)
       stopStateRetry()
       window.clearInterval(countdownCheck)
