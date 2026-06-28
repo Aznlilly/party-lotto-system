@@ -2,11 +2,12 @@
   position: relative;
   min-height: 100vh;
   overflow: hidden;
+  isolation: isolate;
 }
 
 .header {
   position: relative;
-  z-index: 4;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -37,7 +38,7 @@
 
 .main {
   position: relative;
-  z-index: 4;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -46,11 +47,14 @@
 }
 
 .centerPanel {
+  position: relative;
+  z-index: 1;
   width: min(100%, 720px);
   height: min(72vh, 640px);
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  isolation: isolate;
 }
 
 .chatRow {

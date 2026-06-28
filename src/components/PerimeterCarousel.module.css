@@ -2,7 +2,10 @@
   position: fixed;
   inset: 0;
   pointer-events: none;
-  z-index: 2;
+}
+
+.layerBack {
+  z-index: 0;
 }
 
 .tile {
@@ -47,7 +50,7 @@
     0 0 0 2px rgba(255, 213, 79, 0.35),
     0 0 28px rgba(255, 213, 79, 0.85);
   will-change: transform;
-  z-index: 4;
+  z-index: 1;
   pointer-events: none;
 }
 

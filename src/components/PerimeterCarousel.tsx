@@ -135,6 +135,7 @@ export function PerimeterCarousel({
       tileWidth: tileSize.tileWidth,
       tileHeight: tileSize.tileHeight,
       padding: tileSize.padding,
+      insets: tileSize.insets,
     }),
     [size.width, size.height, tileSize],
   )
@@ -146,7 +147,7 @@ export function PerimeterCarousel({
 
   return (
     <div
-      className={styles.layer}
+      className={`${styles.layer} ${styles.layerBack}`}
       aria-hidden={phase === 'winner'}
       style={
         {
