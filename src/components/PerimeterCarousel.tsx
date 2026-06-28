@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from 'react'
 import type { MovieEntry, RoomPhase } from '../types/room'
 import { CRAWL_LAP_MS } from '../types/room'
 import {
@@ -22,7 +29,22 @@ type Props = {
   rouletteSeed?: number
 }
 
-export function PerimeterCarousel({
+function applyTileTransforms(
+  movies: MovieEntry[],
+  config: PerimeterConfig,
+  offset: number,
+  tileRefs: Map<string, HTMLDivElement>,
+) {
+  movies.forEach((movie, index) => {
+    const el = tileRefs.get(movie.id)
+    if (!el) return
+    const t = getMoviePerimeterPosition(index, movies.length, offset)
+    const point = positionOnPerimeter(config, t)
+    el.style.transform = `translate3d(${point.x}px, ${point.y}px, 0)`
+  })
+}
+
+function PerimeterCarouselInner({
   movies,
   phase,
   frozenOffset,
@@ -31,9 +53,13 @@ export function PerimeterCarousel({
   rouletteSeed,
 }: Props) {
   const [size, setSize] = useState({ width: window.innerWidth, height: window.innerHeight })
-  const [renderOffset, setRenderOffset] = useState(crawlOffsetRef.current)
   const [highlightPosition, setHighlightPosition] = useState<number | null>(null)
   const frozenOffsetRef = useRef(frozenOffset ?? crawlOffsetRef.current)
+  const tileRefs = useRef(new Map<string, HTMLDivElement>())
+  const moviesRef = useRef(movies)
+  const configRef = useRef<PerimeterConfig | null>(null)
+
+  moviesRef.current = movies
 
   useEffect(() => {
     const onResize = () => {
@@ -45,10 +71,30 @@ export function PerimeterCarousel({
 
   const isCrawling = phase === 'collecting' || phase === 'countdown'
 
+  const tileSize = useMemo(
+    () => computeDynamicTileSize(size.width, size.height, movies.length),
+    [size.width, size.height, movies.length],
+  )
+
+  const config: PerimeterConfig = useMemo(
+    () => ({
+      width: size.width,
+      height: size.height,
+      tileWidth: tileSize.tileWidth,
+      tileHeight: tileSize.tileHeight,
+      padding: tileSize.padding,
+      insets: tileSize.insets,
+    }),
+    [size.width, size.height, tileSize],
+  )
+
+  configRef.current = config
+
+  const movieIds = useMemo(() => movies.map((movie) => movie.id).join(','), [movies])
+
   useEffect(() => {
     if (phase === 'frozen' || phase === 'roulette' || phase === 'winner') {
       frozenOffsetRef.current = frozenOffset ?? crawlOffsetRef.current
-      setRenderOffset(frozenOffsetRef.current)
     }
   }, [phase, frozenOffset, crawlOffsetRef])
 
@@ -67,15 +113,30 @@ export function PerimeterCarousel({
       last = now
       currentOffset = (currentOffset + delta / CRAWL_LAP_MS) % 1
       crawlOffsetRef.current = currentOffset
-      setRenderOffset(currentOffset)
+
+      const liveConfig = configRef.current
+      if (liveConfig) {
+        applyTileTransforms(moviesRef.current, liveConfig, currentOffset, tileRefs.current)
+      }
+
       frame = requestAnimationFrame(tick)
     }
 
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [isCrawling, crawlOffsetRef])
+  }, [isCrawling, movieIds, crawlOffsetRef, tileSize.tileWidth, tileSize.tileHeight])
 
-  const movieIds = useMemo(() => movies.map((movie) => movie.id).join(','), [movies])
+  useEffect(() => {
+    if (isCrawling) return
+    const liveConfig = configRef.current
+    if (!liveConfig) return
+    applyTileTransforms(
+      moviesRef.current,
+      liveConfig,
+      frozenOffsetRef.current,
+      tileRefs.current,
+    )
+  }, [isCrawling, movieIds, phase, frozenOffset, tileSize.tileWidth, tileSize.tileHeight])
 
   useEffect(() => {
     if (phase !== 'roulette' || !rouletteSeed || !winnerId || movies.length === 0) {
@@ -118,27 +179,10 @@ export function PerimeterCarousel({
     }
   }, [phase, movieIds, winnerId, rouletteSeed, movies.length])
 
-  const offset =
+  const staticOffset =
     phase === 'frozen' || phase === 'roulette' || phase === 'winner'
       ? frozenOffsetRef.current
-      : renderOffset
-
-  const tileSize = useMemo(
-    () => computeDynamicTileSize(size.width, size.height, movies.length),
-    [size.width, size.height, movies.length],
-  )
-
-  const config: PerimeterConfig = useMemo(
-    () => ({
-      width: size.width,
-      height: size.height,
-      tileWidth: tileSize.tileWidth,
-      tileHeight: tileSize.tileHeight,
-      padding: tileSize.padding,
-      insets: tileSize.insets,
-    }),
-    [size.width, size.height, tileSize],
-  )
+      : crawlOffsetRef.current
 
   const highlightPoint =
     highlightPosition == null ? null : positionOnPerimeter(config, highlightPosition)
@@ -156,12 +200,16 @@ export function PerimeterCarousel({
       }
     >
       {movies.map((movie, index) => {
-        const t = getMoviePerimeterPosition(index, movies.length, offset)
+        const t = getMoviePerimeterPosition(index, movies.length, staticOffset)
         const point = positionOnPerimeter(config, t)
 
         return (
           <div
             key={movie.id}
+            ref={(el) => {
+              if (el) tileRefs.current.set(movie.id, el)
+              else tileRefs.current.delete(movie.id)
+            }}
             className={styles.tile}
             style={{
               transform: `translate3d(${point.x}px, ${point.y}px, 0)`,
@@ -193,3 +241,20 @@ export function PerimeterCarousel({
     </div>
   )
 }
+
+function carouselPropsEqual(prev: Props, next: Props): boolean {
+  if (
+    prev.phase !== next.phase ||
+    prev.frozenOffset !== next.frozenOffset ||
+    prev.winnerId !== next.winnerId ||
+    prev.rouletteSeed !== next.rouletteSeed ||
+    prev.crawlOffsetRef !== next.crawlOffsetRef ||
+    prev.movies.length !== next.movies.length
+  ) {
+    return false
+  }
+
+  return prev.movies.every((movie, index) => movie.id === next.movies[index]?.id)
+}
+
+export const PerimeterCarousel = memo(PerimeterCarouselInner, carouselPropsEqual)
