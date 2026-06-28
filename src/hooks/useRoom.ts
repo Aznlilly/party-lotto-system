@@ -62,6 +62,14 @@ function shouldApplyRemoteState(local: RoomState, remote: RoomState): boolean {
   return stateRevision(remote) > stateRevision(local)
 }
 
+function isWaitingForHostSnapshot(
+  hasRemotePeer: boolean,
+  peerCount: number,
+  hasSyncedFromHost: boolean,
+): boolean {
+  return hasRemotePeer && peerCount === 1 && !hasSyncedFromHost
+}
+
 function sortedPeers(peers: Iterable<PeerInfo>): PeerInfo[] {
   return Array.from(peers).sort((a, b) => {
     if (a.joinedAt !== b.joinedAt) return a.joinedAt - b.joinedAt
@@ -86,6 +94,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const isHostRef = useRef(false)
   const hasSyncedFromHostRef = useRef(false)
   const hasAnnouncedRef = useRef(false)
+  const hasRemotePeerRef = useRef(false)
   const broadcastRef = useRef<(state: RoomState) => void>(() => {})
   const sendStateToPeerRef = useRef<(state: RoomState, peerId: string) => void>(() => {})
 
@@ -191,26 +200,38 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       }
     }
 
+    const needsHostSync = () => {
+      if (hasSyncedFromHostRef.current) return false
+      if (isWaitingForHostSnapshot(
+        hasRemotePeerRef.current,
+        peersRef.current.size,
+        hasSyncedFromHostRef.current,
+      )) {
+        return true
+      }
+      return !isHostRef.current
+    }
+
     const requestStateFromHost = () => {
-      if (isHostRef.current || hasSyncedFromHostRef.current) return
+      if (!needsHostSync()) return
       void requestAction.send({ requesterId: myPeerId })
     }
 
     const startSyncRetry = () => {
-      if (syncRetryTimer !== undefined || isHostRef.current || hasSyncedFromHostRef.current) {
+      if (syncRetryTimer !== undefined || !needsHostSync()) {
         return
       }
 
       let attempts = 0
       syncRetryTimer = window.setInterval(() => {
-        if (isHostRef.current || hasSyncedFromHostRef.current) {
+        if (!needsHostSync()) {
           stopSyncRetry()
           return
         }
 
         attempts += 1
         requestStateFromHost()
-        if (attempts >= 12) {
+        if (attempts >= 20) {
           stopSyncRetry()
         }
       }, 1500)
@@ -230,7 +251,15 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
       const peerList = sortedPeers(peersRef.current.values())
       const electedId = electHost(peerList)
-      const amHost = electedId === myPeerId
+      let amHost = electedId === myPeerId
+
+      if (isWaitingForHostSnapshot(
+        hasRemotePeerRef.current,
+        peerList.length,
+        hasSyncedFromHostRef.current,
+      )) {
+        amHost = false
+      }
 
       isHostRef.current = amHost
       setIsHost(amHost)
@@ -273,18 +302,11 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       if (hasAnnouncedRef.current) return
       hasAnnouncedRef.current = true
 
-      const payload: AnnouncePayload = {
+      void announceAction.send({
         peerId: myPeerId,
         nickname,
         joinedAt: joinedAtRef.current,
-      }
-
-      const hostPeerId = stateRef.current.hostPeerId
-      if (hostPeerId && hostPeerId !== myPeerId) {
-        void announceAction.send(payload, { target: hostPeerId })
-      } else {
-        void announceAction.send(payload)
-      }
+      })
     }
 
     const commitPeerRoster = (isNewPeer: boolean, peerId: string) => {
@@ -303,21 +325,40 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     announceAction.onMessage = (data) => {
-      if (!isHostRef.current) return
-
       const isNewPeer = !peersRef.current.has(data.peerId)
       peersRef.current.set(data.peerId, data)
+      resolveHostRole()
+
+      if (!isHostRef.current) return
+
       commitPeerRoster(isNewPeer, data.peerId)
     }
 
     stateAction.onMessage = (state, context) => {
       const fromPeerId = context?.peerId
       if (!fromPeerId || fromPeerId === myPeerId) return
-      if (isHostRef.current) return
       if (fromPeerId !== state.hostPeerId) return
+
+      if (isHostRef.current && state.hostPeerId === myPeerId) {
+        return
+      }
+
+      if (isHostRef.current && state.hostPeerId !== myPeerId) {
+        isHostRef.current = false
+        setIsHost(false)
+      }
+
+      if (!hasSyncedFromHostRef.current) {
+        hasSyncedFromHostRef.current = true
+        stateRef.current = state
+        setRoomState(state)
+        syncHostRoleFromState()
+        stopSyncRetry()
+        return
+      }
+
       if (!shouldApplyRemoteState(stateRef.current, state)) return
 
-      hasSyncedFromHostRef.current = true
       stateRef.current = state
       setRoomState(state)
       syncHostRoleFromState()
@@ -378,12 +419,11 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     room.onPeerJoin = () => {
+      hasRemotePeerRef.current = true
       setConnected(true)
       setConnectionError(null)
       announceToHost()
-      if (!isHostRef.current) {
-        requestStateFromHost()
-      }
+      resolveHostRole()
     }
 
     room.onPeerLeave = (peerId) => {
@@ -427,6 +467,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     return () => {
       hasSyncedFromHostRef.current = false
       hasAnnouncedRef.current = false
+      hasRemotePeerRef.current = false
       window.removeEventListener('pagehide', handlePageHide)
       window.clearTimeout(connectTimer)
       stopSyncRetry()
