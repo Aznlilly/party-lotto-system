@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   decodeRoomCodeParam,
   encodeRoomCodeForUrl,
+  generateRoomCode,
   isValidRoomCode,
   normalizeRoomCode,
 } from '../lib/roomCode'
@@ -45,12 +46,7 @@ export function JoinPage() {
   }
 
   const generateCode = useCallback(() => {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-    let code = ''
-    for (let i = 0; i < 6; i += 1) {
-      code += chars[Math.floor(Math.random() * chars.length)]
-    }
-    setRoomCode(code)
+    setRoomCode(generateRoomCode())
   }, [])
 
   const subtitle = useMemo(
@@ -82,7 +78,7 @@ export function JoinPage() {
               id="room-code"
               value={roomCode}
               onChange={(e) => setRoomCode(e.target.value)}
-              placeholder="fun room of doom and silliness"
+              placeholder="Friday Movie Night"
               maxLength={120}
             />
             <button type="button" onClick={generateCode}>

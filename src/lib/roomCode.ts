@@ -40,3 +40,14 @@ export function decodeRoomCodeParam(param: string): string {
     return normalizeRoomCode(param)
   }
 }
+
+const GENERATED_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+const GENERATED_CODE_LENGTH = 10
+
+export function generateRoomCode(length = GENERATED_CODE_LENGTH): string {
+  let code = ''
+  for (let i = 0; i < length; i += 1) {
+    code += GENERATED_CODE_CHARS[Math.floor(Math.random() * GENERATED_CODE_CHARS.length)]
+  }
+  return code
+}
