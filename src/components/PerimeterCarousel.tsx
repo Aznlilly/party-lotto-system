@@ -93,7 +93,7 @@ function PerimeterCarouselInner({
   const movieIds = useMemo(() => movies.map((movie) => movie.id).join(','), [movies])
 
   useEffect(() => {
-    if (phase === 'frozen' || phase === 'roulette' || phase === 'winner') {
+    if (phase === 'frozen' || phase === 'roulette' || phase === 'winner' || phase === 'revealed') {
       frozenOffsetRef.current = frozenOffset ?? crawlOffsetRef.current
     }
   }, [phase, frozenOffset, crawlOffsetRef])
@@ -180,12 +180,30 @@ function PerimeterCarouselInner({
   }, [phase, movieIds, winnerId, rouletteSeed, movies.length])
 
   const staticOffset =
-    phase === 'frozen' || phase === 'roulette' || phase === 'winner'
+    phase === 'frozen' ||
+    phase === 'roulette' ||
+    phase === 'winner' ||
+    phase === 'revealed'
       ? frozenOffsetRef.current
       : crawlOffsetRef.current
 
+  const winnerHighlightPosition = useMemo(() => {
+    if ((phase !== 'winner' && phase !== 'revealed') || !winnerId || movies.length === 0) {
+      return null
+    }
+
+    const winnerIndex = movies.findIndex((movie) => movie.id === winnerId)
+    if (winnerIndex < 0) return null
+
+    return getMoviePerimeterPosition(winnerIndex, movies.length, staticOffset)
+  }, [phase, winnerId, movies, staticOffset])
+
+  const activeHighlightPosition = highlightPosition ?? winnerHighlightPosition
+
   const highlightPoint =
-    highlightPosition == null ? null : positionOnPerimeter(config, highlightPosition)
+    activeHighlightPosition == null
+      ? null
+      : positionOnPerimeter(config, activeHighlightPosition)
 
   if (movies.length === 0) return null
 
@@ -202,6 +220,8 @@ function PerimeterCarouselInner({
       {movies.map((movie, index) => {
         const t = getMoviePerimeterPosition(index, movies.length, staticOffset)
         const point = positionOnPerimeter(config, t)
+        const isWinner =
+          (phase === 'winner' || phase === 'revealed') && movie.id === winnerId
 
         return (
           <div
@@ -210,7 +230,7 @@ function PerimeterCarouselInner({
               if (el) tileRefs.current.set(movie.id, el)
               else tileRefs.current.delete(movie.id)
             }}
-            className={styles.tile}
+            className={`${styles.tile} ${isWinner ? styles.winnerTile : ''}`}
             style={{
               transform: `translate3d(${point.x}px, ${point.y}px, 0)`,
               width: tileSize.tileWidth,

@@ -27,6 +27,7 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
     addMovie,
     startCountdown,
     resetRound,
+    dismissWinner,
   } = useRoom(roomCode, nickname)
 
   const [copied, setCopied] = useState(false)
@@ -82,6 +83,7 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
         movie={winner}
         visible={roomState.phase === 'winner'}
         isHost={isHost}
+        onDismiss={dismissWinner}
         onReset={resetRound}
       />
 
@@ -144,6 +146,11 @@ function RoomPageContent({ roomCode, nickname }: RoomPageContentProps) {
           )}
           {roomState.phase === 'roulette' && (
             <p className={styles.phaseNotice}>Selecting a movie...</p>
+          )}
+          {isHost && roomState.phase === 'revealed' && (
+            <button type="button" className={styles.startButton} onClick={resetRound}>
+              Pick again
+            </button>
           )}
         </div>
       </main>

@@ -3,16 +3,17 @@ import { joinRoom, selfId } from 'trystero'
 import type { MessageAction } from 'trystero'
 import {
   APP_ID,
-  COUNTDOWN_SECONDS,
   type AddMoviePayload,
   type AnnouncePayload,
   type ChatPayload,
+  type ChatMessage,
   type MovieEntry,
   type PeerInfo,
   type RoomState,
   createInitialState,
   electHost,
 } from '../types/room'
+import { COUNTDOWN_SECONDS } from '../lib/appConfig'
 import {
   buildRouletteAnimation,
   getRouletteDuration,
@@ -21,6 +22,7 @@ import {
 import { getMoviePerimeterPosition } from '../lib/perimeterLayout'
 import { resolveUniqueNickname } from '../lib/nicknames'
 import { toTrysteroRoomId } from '../lib/roomCode'
+import { getTrysteroConnectionConfig } from '../lib/webrtcConfig'
 
 type UseRoomResult = {
   roomState: RoomState
@@ -33,6 +35,7 @@ type UseRoomResult = {
   addMovie: (payload: Omit<AddMoviePayload, 'addedBy' | 'addedByPeerId'>) => Promise<string | null>
   startCountdown: () => void
   resetRound: () => void
+  dismissWinner: () => void
 }
 
 function generateId(): string {
@@ -41,6 +44,23 @@ function generateId(): string {
 
 function hasPeerVoted(movies: MovieEntry[], peerId: string): boolean {
   return movies.some((movie) => movie.addedByPeerId === peerId)
+}
+
+function createWinnerAnnouncement(winner: MovieEntry | undefined): ChatMessage {
+  return {
+    id: generateId(),
+    peerId: 'system',
+    nickname: 'Party Lotto',
+    text: winner
+      ? `Tonight's pick: ${winner.title} (added by ${winner.addedBy})`
+      : 'A winner was selected!',
+    timestamp: Date.now(),
+    kind: 'winner-announcement',
+  }
+}
+
+function hasWinnerAnnouncement(messages: ChatMessage[]): boolean {
+  return messages.some((message) => message.kind === 'winner-announcement')
 }
 
 function createMovieEntry(data: AddMoviePayload): MovieEntry {
@@ -146,6 +166,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const chatActionRef = useRef<MessageAction<ChatPayload> | null>(null)
   const addMovieActionRef = useRef<MessageAction<AddMoviePayload> | null>(null)
   const announceActionRef = useRef<MessageAction<AnnouncePayload> | null>(null)
+  const dismissWinnerActionRef = useRef<MessageAction<Record<string, never>> | null>(null)
 
   const [roomState, setRoomState] = useState<RoomState>(() =>
     createInitialState(myPeerId, selfPeerRef.current),
@@ -224,7 +245,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     const room = joinRoom(
       {
         appId: APP_ID,
-        relayConfig: { redundancy: 10 },
+        ...getTrysteroConnectionConfig(),
       },
       trysteroRoomId,
       {
@@ -242,11 +263,13 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     const requestAnnounceAction = room.makeAction<{ requesterId: string }>('requestAnnounce')
     const chatAction = room.makeAction<ChatPayload>('chat')
     const addMovieAction = room.makeAction<AddMoviePayload>('addMovie')
+    const dismissWinnerAction = room.makeAction<Record<string, never>>('dismissWinner')
     const leaveAction = room.makeAction<{ peerId: string }>('peerLeave')
 
     announceActionRef.current = announceAction
     chatActionRef.current = chatAction
     addMovieActionRef.current = addMovieAction
+    dismissWinnerActionRef.current = dismissWinnerAction
 
     broadcastRef.current = (state) => {
       void stateAction.send(state)
@@ -582,6 +605,31 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       )
     }
 
+    const commitWinnerDismissal = () => {
+      if (stateRef.current.phase !== 'winner') return
+
+      const winner = stateRef.current.movies.find(
+        (movie) => movie.id === stateRef.current.winnerId,
+      )
+      const messages = hasWinnerAnnouncement(stateRef.current.messages)
+        ? stateRef.current.messages
+        : [...stateRef.current.messages, createWinnerAnnouncement(winner)]
+
+      hostCommit(
+        {
+          ...stateRef.current,
+          phase: 'revealed',
+          messages,
+        },
+        true,
+      )
+    }
+
+    dismissWinnerAction.onMessage = (_data, context) => {
+      if (!isHostRef.current || context.peerId === myPeerId) return
+      commitWinnerDismissal()
+    }
+
     room.onPeerJoin = (peerId) => {
       hasRemotePeerRef.current = true
       setConnected(true)
@@ -678,6 +726,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       announceActionRef.current = null
       chatActionRef.current = null
       addMovieActionRef.current = null
+      dismissWinnerActionRef.current = null
       broadcastRef.current = () => {}
       sendStateToPeerRef.current = () => {}
       void leaveAction.send({ peerId: myPeerId })
@@ -773,6 +822,9 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
   const resetRound = useCallback(() => {
     if (!isHostRef.current) return
+    if (stateRef.current.phase !== 'collecting' && stateRef.current.phase !== 'revealed') {
+      return
+    }
 
     hostCommit(
       {
@@ -788,6 +840,36 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     )
   }, [hostCommit])
 
+  const dismissWinner = useCallback(() => {
+    if (stateRef.current.phase !== 'winner') return
+
+    if (isHostRef.current) {
+      const winner = stateRef.current.movies.find(
+        (movie) => movie.id === stateRef.current.winnerId,
+      )
+      const messages = hasWinnerAnnouncement(stateRef.current.messages)
+        ? stateRef.current.messages
+        : [...stateRef.current.messages, createWinnerAnnouncement(winner)]
+
+      hostCommit(
+        {
+          ...stateRef.current,
+          phase: 'revealed',
+          messages,
+        },
+        true,
+      )
+      return
+    }
+
+    const hostPeerId = stateRef.current.hostPeerId
+    if (hostPeerId && hostPeerId !== myPeerId) {
+      void dismissWinnerActionRef.current?.send({}, { target: hostPeerId })
+    } else {
+      void dismissWinnerActionRef.current?.send({})
+    }
+  }, [myPeerId, hostCommit])
+
   return {
     roomState,
     myPeerId,
@@ -799,5 +881,6 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     addMovie,
     startCountdown,
     resetRound,
+    dismissWinner,
   }
 }

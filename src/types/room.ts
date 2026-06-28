@@ -1,4 +1,10 @@
-export type RoomPhase = 'collecting' | 'countdown' | 'frozen' | 'roulette' | 'winner'
+export type RoomPhase =
+  | 'collecting'
+  | 'countdown'
+  | 'frozen'
+  | 'roulette'
+  | 'winner'
+  | 'revealed'
 
 export type MovieEntry = {
   id: string
@@ -16,6 +22,7 @@ export type ChatMessage = {
   nickname: string
   text: string
   timestamp: number
+  kind?: 'user' | 'winner-announcement'
 }
 
 export type RoomState = {
@@ -60,7 +67,6 @@ export type StartCountdownPayload = {
 }
 
 export const APP_ID = 'party-movie-lotto-v1'
-export const COUNTDOWN_SECONDS = 30
 export const CRAWL_LAP_MS = 60000
 
 export function isBootstrapState(state: RoomState): boolean {

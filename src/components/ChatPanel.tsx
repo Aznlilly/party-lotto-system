@@ -36,17 +36,30 @@ export function ChatPanel({ messages, onSend, disabled }: Props) {
         {messages.length === 0 ? (
           <p className={styles.empty}>Say hi and pick your movie above.</p>
         ) : (
-          messages.map((message) => (
-            <div key={message.id} className={styles.message}>
-              <span
-                className={styles.author}
-                style={{ color: colorForPeer(message.peerId ?? message.nickname) }}
+          messages.map((message) => {
+            const isWinnerAnnouncement = message.kind === 'winner-announcement'
+
+            return (
+              <div
+                key={message.id}
+                className={
+                  isWinnerAnnouncement ? styles.winnerAnnouncement : styles.message
+                }
               >
-                {message.nickname}
-              </span>
-              <span className={styles.text}>{message.text}</span>
-            </div>
-          ))
+                <span
+                  className={styles.author}
+                  style={{
+                    color: isWinnerAnnouncement
+                      ? '#ffd54f'
+                      : colorForPeer(message.peerId ?? message.nickname),
+                  }}
+                >
+                  {message.nickname}
+                </span>
+                <span className={styles.text}>{message.text}</span>
+              </div>
+            )
+          })
         )}
         <div ref={bottomRef} />
       </div>

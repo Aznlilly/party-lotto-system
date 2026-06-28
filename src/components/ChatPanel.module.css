@@ -54,6 +54,16 @@
   word-break: break-word;
 }
 
+.winnerAnnouncement {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 213, 79, 0.35);
+  background: rgba(255, 213, 79, 0.1);
+}
+
 .form {
   display: flex;
   gap: 0.5rem;

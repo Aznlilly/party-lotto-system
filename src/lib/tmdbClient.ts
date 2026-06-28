@@ -139,6 +139,13 @@ export async function searchMovies(query: string): Promise<MovieMetadata[]> {
   })
 }
 
+export function getTmdbMovieUrl(externalId: string): string | null {
+  if (!externalId.startsWith('tmdb:')) return null
+  const id = externalId.slice('tmdb:'.length).trim()
+  if (!id) return null
+  return `https://www.themoviedb.org/movie/${id}`
+}
+
 export function createManualMovie(title: string, posterUrl: string): MovieMetadata {
   const trimmedTitle = title.trim()
   const trimmedPosterUrl = posterUrl.trim()
