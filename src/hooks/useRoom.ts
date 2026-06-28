@@ -64,6 +64,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const crawlOffsetRef = useRef(0)
   const rouletteTimerRef = useRef<number | null>(null)
   const isHostRef = useRef(true)
+  const authoritativeHostRef = useRef(false)
   const broadcastRef = useRef<(state: RoomState) => void>(() => {})
 
   const chatActionRef = useRef<MessageAction<ChatPayload> | null>(null)
@@ -82,7 +83,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
   const commitState = useCallback((next: RoomState, shouldBroadcast: boolean) => {
     stateRef.current = next
     setRoomState(next)
-    if (shouldBroadcast && isHostRef.current) {
+    if (shouldBroadcast && isHostRef.current && authoritativeHostRef.current) {
       broadcastRef.current(next)
     }
   }, [])
@@ -158,15 +159,28 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
     let receivedRemoteState = false
 
-    const createFreshRoom = () => {
-      const fresh = createInitialState(myPeerId)
-      commitState(fresh, true)
+    const syncFullStateToPeers = () => {
+      if (!isHostRef.current || !authoritativeHostRef.current) return
+      broadcastRef.current(stateRef.current)
     }
 
-    const resetRoomIfHostAlone = () => {
-      if (!isHostRef.current) return
-      if (peersRef.current.size > 1) return
-      createFreshRoom()
+    const requestFullState = () => {
+      void requestAction.send({ requesterId: myPeerId })
+    }
+
+    const claimSoloHost = () => {
+      if (receivedRemoteState || peersRef.current.size > 1) return
+      authoritativeHostRef.current = true
+      isHostRef.current = true
+      if (stateRef.current.hostPeerId !== myPeerId) {
+        commitState({ ...stateRef.current, hostPeerId: myPeerId }, true)
+      } else {
+        syncFullStateToPeers()
+      }
+    }
+
+    const stopStateRetry = () => {
+      window.clearInterval(stateRetryTimer)
     }
 
     const updatePeerCount = () => {
@@ -177,9 +191,20 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     }
 
     const reelectHost = () => {
-      const peers = Array.from(peersRef.current.values())
-      const newHostId = electHost(peers)
-      if (!newHostId || newHostId === stateRef.current.hostPeerId) return
+      const peerList = Array.from(peersRef.current.values())
+      const newHostId = electHost(peerList)
+      if (!newHostId) return
+
+      const amHost = newHostId === myPeerId
+      isHostRef.current = amHost
+
+      if (amHost && (receivedRemoteState || peerList.length === 1)) {
+        authoritativeHostRef.current = true
+      } else if (!amHost) {
+        authoritativeHostRef.current = false
+      }
+
+      if (newHostId === stateRef.current.hostPeerId) return
 
       commitState(
         {
@@ -190,6 +215,13 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       )
     }
 
+    const handlePeerLeave = (peerId: string) => {
+      if (peerId === myPeerId) return
+      peersRef.current.delete(peerId)
+      updatePeerCount()
+      reelectHost()
+    }
+
     const announceSelf = () => {
       void announceAction.send({
         peerId: myPeerId,
@@ -198,18 +230,11 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       })
     }
 
-    const handlePeerLeave = (peerId: string) => {
-      if (peerId === myPeerId) return
-      peersRef.current.delete(peerId)
-      updatePeerCount()
-      reelectHost()
-      resetRoomIfHostAlone()
-    }
-
     announceAction.onMessage = (data) => {
       peersRef.current.set(data.peerId, data)
       updatePeerCount()
       reelectHost()
+      syncFullStateToPeers()
 
       if (data.peerId !== myPeerId) {
         announceSelf()
@@ -218,14 +243,15 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
 
     stateAction.onMessage = (state) => {
       receivedRemoteState = true
+      authoritativeHostRef.current = false
+      isHostRef.current = state.hostPeerId === myPeerId
       stateRef.current = state
       setRoomState(state)
+      stopStateRetry()
     }
 
     requestAction.onMessage = () => {
-      if (isHostRef.current) {
-        broadcastRef.current(stateRef.current)
-      }
+      syncFullStateToPeers()
     }
 
     leaveAction.onMessage = (data) => {
@@ -270,11 +296,7 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       setConnected(true)
       setConnectionError(null)
       announceSelf()
-      if (isHostRef.current) {
-        broadcastRef.current(stateRef.current)
-      } else {
-        void requestAction.send({ requesterId: myPeerId })
-      }
+      requestFullState()
     }
 
     room.onPeerLeave = (peerId) => {
@@ -285,17 +307,39 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
       setConnected(true)
       announceSelf()
       reelectHost()
-      if (!isHostRef.current) {
-        void requestAction.send({ requesterId: myPeerId })
+      requestFullState()
+
+      if (isHostRef.current && peersRef.current.size === 1 && !receivedRemoteState) {
+        authoritativeHostRef.current = true
+        syncFullStateToPeers()
       }
     }, 1500)
+
+    const earlyHostTimer = window.setTimeout(() => {
+      if (receivedRemoteState || peersRef.current.size > 1) return
+      authoritativeHostRef.current = true
+      isHostRef.current = true
+    }, 400)
 
     const bootstrapTimer = window.setTimeout(() => {
       if (receivedRemoteState) return
       if (peersRef.current.size > 1) return
-      if (stateRef.current.movies.length > 0 || stateRef.current.messages.length > 0) return
-      createFreshRoom()
+      claimSoloHost()
     }, 2800)
+
+    let stateRetryCount = 0
+    const stateRetryTimer = window.setInterval(() => {
+      if (receivedRemoteState || authoritativeHostRef.current) {
+        stopStateRetry()
+        return
+      }
+      stateRetryCount += 1
+      if (stateRetryCount > 8) {
+        stopStateRetry()
+        return
+      }
+      requestFullState()
+    }, 1200)
 
     const handlePageHide = () => {
       void leaveAction.send({ peerId: myPeerId })
@@ -328,7 +372,9 @@ export function useRoom(roomCode: string, nickname: string): UseRoomResult {
     return () => {
       window.removeEventListener('pagehide', handlePageHide)
       window.clearTimeout(connectTimer)
+      window.clearTimeout(earlyHostTimer)
       window.clearTimeout(bootstrapTimer)
+      stopStateRetry()
       window.clearInterval(countdownCheck)
       if (rouletteTimerRef.current) window.clearTimeout(rouletteTimerRef.current)
       chatActionRef.current = null
